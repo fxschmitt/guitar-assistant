@@ -14,7 +14,19 @@ from __future__ import annotations
 
 import pytest
 
-from guitar_assistant.wikipedia_client import ELECTRIC_GUITARS_CATEGORY, WikipediaClient
+from guitar_assistant.wikipedia_client import (
+    ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY,
+    ELECTRIC_GUITARS_CATEGORY,
+    WikipediaClient,
+)
+
+# `Category:Electric guitars`'s own direct articles, confirmed by manual exploration
+# of the real API: generic topics that sit next to the manufacturer subcategory
+# tree, not guitar models. If the manufacturer-entry-point walk below ever starts
+# yielding these, something has regressed back to walking the wrong branch.
+_GENERIC_TOPIC_NOISE = frozenset(
+    {"Guitar amplifier", "Distortion (music)", "Effects unit", "Guitar wiring"}
+)
 
 
 @pytest.mark.integration
@@ -29,6 +41,24 @@ def test_walk_category_finds_real_electric_guitar_articles():
                 break
         # THEN at least one real article title is found
         assert titles
+
+
+@pytest.mark.integration
+def test_walk_category_from_manufacturer_entry_point_finds_guitar_models():
+    # GIVEN a client walking from the by-manufacturer entry point, deep enough to
+    # reach model articles nested under a manufacturer's own model-line subcategory
+    # (e.g. Category:Electric guitars by manufacturer -> Category:Fender electric
+    # guitars -> Category:Fender Stratocasters -> Fender Stratocaster)
+    with WikipediaClient(max_requests=15) as client:
+        titles = []
+        for title in client.walk_category(ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY, max_depth=2):
+            titles.append(title)
+            if len(titles) >= 10:
+                break
+        # THEN real guitar model articles are found, not the generic-topic noise
+        # that sits directly under Category:Electric guitars
+        assert len(titles) == 10
+        assert not set(titles) & _GENERIC_TOPIC_NOISE
 
 
 @pytest.mark.integration

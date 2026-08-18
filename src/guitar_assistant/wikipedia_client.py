@@ -1,9 +1,11 @@
 """Discover and fetch electric guitar articles from the Wikipedia API.
 
 See the "Wikipedia ingestion" section of docs/scaling_strategy.md:
-`walk_category` enumerates candidate article titles by walking the
-`Category:Electric guitars` subcategory tree, and `fetch_wikitext` pulls one
-article's raw wikitext. Both go through `WikipediaClient`, which enforces
+`walk_category` enumerates candidate article titles by walking a category's
+subcategory tree — in practice, `ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY`,
+since `ELECTRIC_GUITARS_CATEGORY` itself holds mostly generic topic articles
+rather than guitar models — and `fetch_wikitext` pulls one article's raw
+wikitext. Both go through `WikipediaClient`, which enforces
 Wikipedia's API etiquette (an identifying `User-Agent`) and a hard cap on the
 number of requests a run can make, so early test runs can't accidentally walk
 the whole category tree.
@@ -23,6 +25,10 @@ import httpx
 
 API_URL: Final = "https://en.wikipedia.org/w/api.php"
 ELECTRIC_GUITARS_CATEGORY: Final = "Category:Electric guitars"
+# `ELECTRIC_GUITARS_CATEGORY`'s direct articles are mostly generic topics (e.g.
+# "Guitar amplifier", "Distortion (music)"), not guitar models; the actual models
+# live under this subcategory, one subcategory per manufacturer.
+ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY: Final = "Category:Electric guitars by manufacturer"
 DEFAULT_MAX_REQUESTS: Final = 20
 DEFAULT_MAX_DEPTH: Final = 3
 _CATEGORY_MEMBERS_PAGE_SIZE: Final = 500
