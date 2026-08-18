@@ -89,3 +89,14 @@
       # THEN the result should be their sum
       assert result == 5
   ```
+
+## Docs
+
+- Adding/removing/renaming a module under `src/guitar_assistant/` → update the
+  "Package layout" list in `docs/architecture.md` in the same change.
+- Adding a new `@pytest.mark.integration` test file → add a short section for
+  it to `docs/testing.md`, mirroring the existing entries (what it covers, cost/
+  network profile, run command).
+- A change that fully implements a numbered item in `docs/scaling_strategy.md`
+  → fold that item into `docs/architecture.md`/`docs/testing.md` as current
+  behavior, not just leave it described as a future plan.

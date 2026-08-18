@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.4.2",
+    "httpx>=0.28.1",
     "langchain>=1.3.13",
     "langchain-chroma>=1.1.0",
     "langchain-core>=1.4.9",
@@ -41,7 +42,7 @@ explore = [
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: requires a real OPENAI_API_KEY, hits the network, slow/costs money; excluded by default",
+    "integration: hits a real network API (OpenAI or Wikipedia), slow/costs money; excluded by default",
 ]
 addopts = "--strict-markers -m 'not integration'"
 
