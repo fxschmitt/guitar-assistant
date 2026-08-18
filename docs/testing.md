@@ -79,6 +79,20 @@ so it's also `@pytest.mark.integration` and excluded by default:
 uv run pytest -m integration tests/test_evaluation_integration.py
 ```
 
+## Wikipedia client integration test
+
+`tests/test_wikipedia_client_integration.py` checks
+[wikipedia_client.py](../src/guitar_assistant/wikipedia_client.py) against the
+real Wikipedia API: that `walk_category` finds real article titles under
+`Category:Electric guitars`, and `fetch_wikitext` returns real infobox content
+for a known article. No API key needed, but it hits the network, so it's
+`@pytest.mark.integration` and excluded by default. Both tests cap
+`max_requests` at 5, so a run can never wander far into the real category tree:
+
+```bash
+uv run pytest -m integration tests/test_wikipedia_client_integration.py
+```
+
 ## Packaging test
 
 MLflow doesn't play well with this repo's `uv`-managed `src/` layout out of the

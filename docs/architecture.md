@@ -166,7 +166,10 @@ src/guitar_assistant/
 ├── retriever.py       # build/query the Chroma store with local embeddings
 ├── agent.py           # LangGraph state, route/retrieve/generate nodes, compiled graph
 ├── mlflow_model.py    # GuitarAssistantModel (pyfunc wrapper) + a log_model() helper
-└── evaluation.py      # golden dataset loading + grade_answer/correctness scorer
+├── evaluation.py      # golden dataset loading + grade_answer/correctness scorer
+└── wikipedia_client.py  # WikipediaClient: walk Category:Electric guitars, fetch wikitext
+                          # (see scaling_strategy.md #1; not yet wired into the ingestion
+                          # pipeline above — discovery/fetch only, no infobox parsing yet)
 tests/
 └── ...                # unit tests per module, plus an end-to-end test that runs
                         # mlflow.genai.evaluate() against task/test-questions.csv,
