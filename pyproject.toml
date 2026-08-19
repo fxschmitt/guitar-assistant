@@ -14,15 +14,18 @@ dependencies = [
     "langchain-chroma>=1.1.0",
     "langchain-core>=1.4.9",
     "langchain-openai>=1.3.5",
+    "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.9",
     "mlflow>=3.14.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "wikitextparser>=1.0.3",
 ]
 
 [project.scripts]
 guitar-assistant = "guitar_assistant:main"
 guitar-assistant-package = "guitar_assistant:package"
+guitar-assistant-ingest = "guitar_assistant.ingestion:main"
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12.0"]

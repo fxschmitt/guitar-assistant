@@ -36,6 +36,65 @@ flowchart LR
     E --> V[(Chroma<br/>in-memory vector store)]
 ```
 
+## Wikipedia ingestion pipeline
+
+Implements docs/scaling_strategy.md #1–#3: growing the corpus beyond the 3
+hand-written files above by ingesting every electric guitar model with a
+Wikipedia article, into a separate, persistent Chroma collection.
+
+- **Discovery + fetch** ([wikipedia_client.py](../src/guitar_assistant/wikipedia_client.py)):
+  `WikipediaClient.walk_category` enumerates candidate titles by walking a
+  category's subcategory tree (in practice,
+  `ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY`); `fetch_wikitext` pulls one
+  article's wikitext and revision ID.
+- **Parse** ([infobox_parser.py](../src/guitar_assistant/infobox_parser.py)):
+  `parse_article` extracts the `Infobox Guitar model` template's fields and
+  converts the rest into clean Markdown (headings, stripped wiki markup,
+  boilerplate sections truncated). Returns `None` for pages with no matching
+  infobox — the filter that separates real guitar-model articles (which
+  `walk_category` alone can't) from manufacturer overview pages, "List of
+  ..." pages, and disambiguation pages.
+- **Chunk** ([chunking.py](../src/guitar_assistant/chunking.py)): `chunk_article`
+  splits a `ParsedArticle` into an **overview chunk** (a rendered spec table
+  from the infobox's spec fields, plus the article's lead paragraph) and one
+  **section chunk** per `##`/`###` heading, via
+  `MarkdownHeaderTextSplitter`. Every chunk is tagged with
+  `manufacturer`/`guitar_model`/`source_uri` metadata, `guitar_model` being a
+  slug of the full article title (not a bare model word) so two
+  manufacturers reusing a model name — "Special", "Custom" — can't collide.
+- **Store + track revisions** ([manifest.py](../src/guitar_assistant/manifest.py),
+  [retriever.py](../src/guitar_assistant/retriever.py)):
+  `open_persistent_vector_store` opens a Chroma collection backed by a local
+  `.chroma/` directory (gitignored, like `mlflow.db`), so embeddings survive
+  process restarts. `IngestionManifest` persists each article's
+  last-ingested revision ID as JSON (`ingestion_manifest.json`, also
+  gitignored); a re-run skips any title whose fetched revision already
+  matches.
+- **Orchestrate** ([ingestion.py](../src/guitar_assistant/ingestion.py)):
+  `run_ingestion` wires the above together — walk, fetch, parse, chunk, and
+  upsert only new-or-changed articles (clearing an article's previous chunks
+  first, since a changed revision can add, remove, or rename sections) —
+  exposed as the `guitar-assistant-ingest` console script for a manual or
+  cron-scheduled run.
+
+```mermaid
+flowchart LR
+    CAT["walk_category<br/>Category: Electric guitars<br/>by manufacturer"] --> FETCH["fetch_wikitext<br/>wikitext + revision ID"]
+    FETCH --> MANIFEST{"IngestionManifest<br/>revision unchanged?"}
+    MANIFEST -->|"yes: skip"| DONE(("done"))
+    MANIFEST -->|"no"| PARSE["parse_article<br/>Infobox Guitar model?"]
+    PARSE -->|"no infobox: skip"| DONE
+    PARSE -->|"parsed"| CHUNK["chunk_article<br/>overview + section chunks"]
+    CHUNK --> STORE[(".chroma/<br/>persistent Chroma store")]
+    STORE --> MARK["manifest.mark_ingested"]
+```
+
+Cross-manufacturer/section-variant LLM extraction, cost containment beyond a
+single `.env` key, and the two-stage fuzzy/LLM router (§5–§6 of
+scaling_strategy.md) remain future work — the vector store above is not yet
+wired into `agent.py`'s query-time retrieval, which still reads from
+`data.py`'s 3-file demo corpus.
+
 ## Agent graph (LangGraph, per query)
 
 Five nodes: a validation gate before any LLM call, the route/retrieve/generate
@@ -163,13 +222,17 @@ flowchart LR
 src/guitar_assistant/
 ├── __init__.py       # package entrypoint / CLI (`guitar-assistant "question"`)
 ├── data.py           # load the 3 markdown files, attach metadata, build Documents
-├── retriever.py       # build/query the Chroma store with local embeddings
+├── retriever.py       # build/open the Chroma store: ephemeral (demo corpus) or persistent
 ├── agent.py           # LangGraph state, route/retrieve/generate nodes, compiled graph
 ├── mlflow_model.py    # GuitarAssistantModel (pyfunc wrapper) + a log_model() helper
 ├── evaluation.py      # golden dataset loading + grade_answer/correctness scorer
-└── wikipedia_client.py  # WikipediaClient: walk Category:Electric guitars, fetch wikitext
-                          # (see scaling_strategy.md #1; not yet wired into the ingestion
-                          # pipeline above — discovery/fetch only, no infobox parsing yet)
+├── wikipedia_client.py  # WikipediaClient: walk Category:Electric guitars, fetch wikitext
+├── infobox_parser.py    # parse_article: Infobox Guitar model fields + clean Markdown body
+├── chunking.py           # chunk_article: overview + per-section Documents, tagged with metadata
+├── manifest.py            # IngestionManifest: title -> last-ingested revision ID, as JSON
+└── ingestion.py            # run_ingestion + `guitar-assistant-ingest` CLI: wires the above
+                             # into the persistent vector store (see "Wikipedia ingestion
+                             # pipeline" below)
 tests/
 └── ...                # unit tests per module, plus an end-to-end test that runs
                         # mlflow.genai.evaluate() against task/test-questions.csv,

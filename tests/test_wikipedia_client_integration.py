@@ -66,6 +66,7 @@ def test_fetch_wikitext_returns_real_article_content():
     # GIVEN a client with a small request budget, pointed at the real Wikipedia API
     with WikipediaClient(max_requests=5) as client:
         # WHEN a well-known article's wikitext is fetched
-        wikitext = client.fetch_wikitext("Fender Stratocaster")
+        article = client.fetch_wikitext("Fender Stratocaster")
         # THEN the raw wikitext is returned and contains the expected infobox template
-        assert "Infobox" in wikitext
+        assert "Infobox" in article.wikitext
+        assert article.revision_id > 0

@@ -8,12 +8,14 @@ import pytest
 
 from guitar_assistant.wikipedia_client import (
     API_URL,
+    ArticleNotFoundError,
     RequestLimitExceededError,
     WikipediaClient,
     default_user_agent,
 )
 
 _TEST_USER_AGENT: Final = "guitar-assistant-tests/0.1 (test@example.com)"
+_TEST_REVISION_ID: Final = 1370144642
 
 
 def _category_members_response(
@@ -38,11 +40,15 @@ def _revisions_response(title: str, wikitext: str) -> dict[str, Any]:
             "pages": {
                 "123": {
                     "title": title,
-                    "revisions": [{"slots": {"main": {"*": wikitext}}}],
+                    "revisions": [{"revid": _TEST_REVISION_ID, "slots": {"main": {"*": wikitext}}}],
                 }
             }
         }
     }
+
+
+def _missing_page_response(title: str) -> dict[str, Any]:
+    return {"query": {"pages": {"-1": {"title": title, "missing": ""}}}}
 
 
 def _client_with_handler(
@@ -160,9 +166,22 @@ def test_fetch_wikitext_returns_the_article_content():
 
     client = _client_with_handler(handle)
     # WHEN the article's wikitext is fetched
-    wikitext = client.fetch_wikitext("Fender Stratocaster")
-    # THEN the raw wikitext content is returned
-    assert wikitext == "{{Infobox musical instrument}}"
+    article = client.fetch_wikitext("Fender Stratocaster")
+    # THEN the raw wikitext content and revision ID are returned
+    assert article.wikitext == "{{Infobox musical instrument}}"
+    assert article.revision_id == _TEST_REVISION_ID
+
+
+def test_fetch_wikitext_raises_article_not_found_for_a_missing_title():
+    # GIVEN a title with no corresponding Wikipedia article
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_missing_page_response("Not A Real Guitar"))
+
+    client = _client_with_handler(handle)
+    # WHEN its wikitext is fetched
+    # THEN a clear error is raised instead of an opaque KeyError
+    with pytest.raises(ArticleNotFoundError, match="Not A Real Guitar"):
+        client.fetch_wikitext("Not A Real Guitar")
 
 
 def test_requests_beyond_the_budget_raise_request_limit_exceeded_error():

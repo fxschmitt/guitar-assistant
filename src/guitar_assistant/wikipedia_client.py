@@ -5,7 +5,7 @@ See the "Wikipedia ingestion" section of docs/scaling_strategy.md:
 subcategory tree — in practice, `ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY`,
 since `ELECTRIC_GUITARS_CATEGORY` itself holds mostly generic topic articles
 rather than guitar models — and `fetch_wikitext` pulls one article's raw
-wikitext. Both go through `WikipediaClient`, which enforces
+wikitext and revision ID. Both go through `WikipediaClient`, which enforces
 Wikipedia's API etiquette (an identifying `User-Agent`) and a hard cap on the
 number of requests a run can make, so early test runs can't accidentally walk
 the whole category tree.
@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from collections import deque
 from collections.abc import Iterator
+from dataclasses import dataclass
 from importlib import metadata
 from types import TracebackType
 from typing import Any, Final, Self
@@ -39,6 +40,29 @@ load_dotenv()
 
 class RequestLimitExceededError(RuntimeError):
     """Raised when a `WikipediaClient` would exceed its configured request budget."""
+
+
+class ArticleNotFoundError(RuntimeError):
+    """Raised when `fetch_wikitext` is asked for a title Wikipedia has no article for.
+
+    A title found via `walk_category` can still fail to resolve — e.g. a stale
+    category listing pointing at a deleted or renamed page.
+    """
+
+
+@dataclass(frozen=True)
+class FetchedArticle:
+    """One article's wikitext, and the revision it was fetched at.
+
+    Attributes:
+        wikitext: The article's raw wikitext of the fetched revision.
+        revision_id: The Wikipedia revision ID `wikitext` was fetched at, used by
+            `IngestionManifest` to detect when an already-ingested article has
+            since changed and needs re-processing.
+    """
+
+    wikitext: str
+    revision_id: int
 
 
 def default_user_agent() -> str:
@@ -139,14 +163,17 @@ class WikipediaClient:
                 else:
                     yield title
 
-    def fetch_wikitext(self, title: str) -> str:
-        """Fetch one article's current wikitext.
+    def fetch_wikitext(self, title: str) -> FetchedArticle:
+        """Fetch one article's current wikitext and revision ID.
 
         Args:
             title: Exact Wikipedia article title, as returned by `walk_category`.
 
         Returns:
-            The article's raw wikitext of its latest revision.
+            The article's raw wikitext and revision ID, both of its latest revision.
+
+        Raises:
+            ArticleNotFoundError: If `title` has no corresponding Wikipedia article.
         """
         response = self._get(
             {
@@ -154,12 +181,17 @@ class WikipediaClient:
                 "prop": "revisions",
                 "titles": title,
                 "rvslots": "main",
-                "rvprop": "content",
+                "rvprop": "ids|content",
             }
         )
         pages = response["query"]["pages"]
         (page,) = pages.values()
-        return page["revisions"][0]["slots"]["main"]["*"]
+        if "missing" in page:
+            raise ArticleNotFoundError(f"No Wikipedia article found for title {title!r}.")
+        revision = page["revisions"][0]
+        return FetchedArticle(
+            wikitext=revision["slots"]["main"]["*"], revision_id=revision["revid"]
+        )
 
     def _iter_category_members(self, category: str) -> Iterator[tuple[str, bool]]:
         """Yield `(title, is_subcategory)` for every direct member of `category`."""

@@ -97,6 +97,43 @@ a known article. No API key needed, but it hits the network, so it's
 uv run pytest -m integration tests/test_wikipedia_client_integration.py
 ```
 
+## Infobox parser integration test
+
+`tests/test_infobox_parser_integration.py` checks
+[infobox_parser.py](../src/guitar_assistant/infobox_parser.py) against real
+Wikipedia articles: that `parse_article` extracts sensible fields (e.g.
+`manufacturer`) and clean, markup-free Markdown from a known article, and that
+running it over a real batch of titles from the by-manufacturer entry point
+correctly filters out the noise that walk (see the Wikipedia client integration
+test above) still lets through — manufacturer overview pages and "List of ..."
+pages, which carry no `Infobox Guitar model` template. No API key needed, but it
+hits the network, so it's `@pytest.mark.integration` and excluded by default.
+`max_requests` is capped (5-40) throughout:
+
+```bash
+uv run pytest -m integration tests/test_infobox_parser_integration.py
+```
+
+## Ingestion pipeline integration test
+
+`tests/test_ingestion_integration.py` checks
+[ingestion.py](../src/guitar_assistant/ingestion.py) end to end against the real
+Wikipedia and OpenAI APIs: that `run_ingestion` walks a real category, chunks
+and embeds real articles into a persistent Chroma store, and that a second run
+over the same category ingests nothing (every title is already up to date per
+the manifest) — the idempotence docs/scaling_strategy.md #2/#4 rely on. Points
+at `Category:Fender Stratocasters`, a small leaf category (~15 articles, no
+subcategories), rather than the full by-manufacturer tree: unlike the other
+integration tests, `run_ingestion` walks its whole target category with no
+early-break title cap, so a narrow category is what bounds this test's request
+count, not `max_requests` alone. Needs both `WIKIPEDIA_CONTACT_EMAIL` and a real
+`OPENAI_API_KEY` (it embeds the real articles it fetches), so it's
+`@pytest.mark.integration` and excluded by default:
+
+```bash
+uv run pytest -m integration tests/test_ingestion_integration.py
+```
+
 ## Packaging test
 
 MLflow doesn't play well with this repo's `uv`-managed `src/` layout out of the
