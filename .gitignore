@@ -20,6 +20,10 @@ mlruns/
 mlartifacts/
 mlflow.db
 
+# Wikipedia ingestion: persistent vector store + revision manifest
+.chroma/
+ingestion_manifest.json
+
 # Secrets / local config (LLM API keys, etc.)
 .env
 .env.*
