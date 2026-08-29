@@ -6,7 +6,7 @@ from typing import Any, Final
 import httpx
 import pytest
 
-from guitar_assistant.wikipedia_client import (
+from guitar_assistant.ingestion.wikipedia_client import (
     API_URL,
     ArticleNotFoundError,
     RequestLimitExceededError,

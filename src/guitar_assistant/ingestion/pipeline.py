@@ -20,16 +20,16 @@ from typing import Final, Protocol
 import click
 from langchain_chroma import Chroma
 
-from guitar_assistant.chunking import chunk_article
-from guitar_assistant.infobox_parser import parse_article
-from guitar_assistant.manifest import DEFAULT_MANIFEST_PATH, IngestionManifest
-from guitar_assistant.retriever import open_persistent_vector_store
-from guitar_assistant.wikipedia_client import (
+from guitar_assistant.ingestion.chunking import chunk_article
+from guitar_assistant.ingestion.infobox_parser import parse_article
+from guitar_assistant.ingestion.manifest import DEFAULT_MANIFEST_PATH, IngestionManifest
+from guitar_assistant.ingestion.wikipedia_client import (
     ArticleNotFoundError,
     ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY,
     FetchedArticle,
     WikipediaClient,
 )
+from guitar_assistant.retriever import open_persistent_vector_store
 
 _CATEGORY_WALK_DEPTH: Final = 2
 _DEFAULT_MAX_REQUESTS: Final = 2000
@@ -109,7 +109,7 @@ def _ingest_one_article(
     # Clear this article's previous chunks first: a changed article can gain,
     # lose, or rename sections between revisions, so an id-keyed upsert alone
     # could leave stale chunks behind from a section that no longer exists.
-    vector_store.delete(where={"source_uri": title})
+    vector_store.delete(where={"source": title})
     vector_store.add_documents(chunks, ids=[f"{title}#{index}" for index in range(len(chunks))])
     manifest.mark_ingested(title, article.revision_id)
     _logger.info("Ingested %r: %d chunks.", title, len(chunks))

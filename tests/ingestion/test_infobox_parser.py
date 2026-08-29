@@ -1,6 +1,6 @@
 """Unit tests for guitar_assistant.infobox_parser."""
 
-from guitar_assistant.infobox_parser import parse_article
+from guitar_assistant.ingestion.infobox_parser import parse_article
 
 _STRATOCASTER_WIKITEXT = """{{Short description|Solid-body electric guitar}}
 {{Use mdy dates|date=May 2022}}

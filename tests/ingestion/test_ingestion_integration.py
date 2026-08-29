@@ -2,7 +2,7 @@
 
 Hits the network, so it's marked `integration` and excluded from the default
 `uv run pytest` run. Run explicitly with
-`uv run pytest -m integration tests/test_ingestion_integration.py`.
+`uv run pytest -m integration tests/ingestion/test_ingestion_integration.py`.
 
 Points `run_ingestion` at `Category:Fender Stratocasters` rather than the full
 by-manufacturer tree: unlike the other integration tests, `run_ingestion` walks
@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from guitar_assistant.ingestion import run_ingestion
-from guitar_assistant.manifest import IngestionManifest
+from guitar_assistant.ingestion.manifest import IngestionManifest
+from guitar_assistant.ingestion.pipeline import run_ingestion
+from guitar_assistant.ingestion.wikipedia_client import WikipediaClient
 from guitar_assistant.retriever import open_persistent_vector_store
-from guitar_assistant.wikipedia_client import WikipediaClient
 
 _STRATOCASTER_MODELS_CATEGORY = "Category:Fender Stratocasters"
 
@@ -41,7 +41,7 @@ def test_run_ingestion_indexes_real_articles_and_skips_them_on_a_second_run(tmp_
     assert first_run_count > 0
     assert vector_store._collection.count() > 0
     results = vector_store.similarity_search("Fender Stratocaster scale length", k=1)
-    assert results[0].metadata["source_uri"] == "Fender Stratocaster"
+    assert results[0].metadata["source"] == "Fender Stratocaster"
     # WHEN the same category is ingested again without any revision having changed
     with WikipediaClient(max_requests=30) as client:
         second_run_count = run_ingestion(

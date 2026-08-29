@@ -1,7 +1,7 @@
 """Unit tests for guitar_assistant.chunking."""
 
-from guitar_assistant.chunking import chunk_article
-from guitar_assistant.infobox_parser import ParsedArticle
+from guitar_assistant.ingestion.chunking import chunk_article
+from guitar_assistant.ingestion.infobox_parser import ParsedArticle
 
 _ARTICLE = ParsedArticle(
     title="Fender Stratocaster",
@@ -87,11 +87,11 @@ def test_every_chunk_shares_the_same_article_level_metadata():
     # GIVEN a parsed article
     # WHEN it is chunked
     chunks = chunk_article(_ARTICLE)
-    # THEN every chunk carries the same manufacturer/guitar_model/source_uri
+    # THEN every chunk carries the same manufacturer/guitar_model/source
     for chunk in chunks:
         assert chunk.metadata["manufacturer"] == "fender"
         assert chunk.metadata["guitar_model"] == "fender_stratocaster"
-        assert chunk.metadata["source_uri"] == "Fender Stratocaster"
+        assert chunk.metadata["source"] == "Fender Stratocaster"
 
 
 def test_chunk_article_handles_a_body_with_no_sections():

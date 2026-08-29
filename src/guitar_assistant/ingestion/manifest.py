@@ -1,7 +1,7 @@
 """Track which Wikipedia revision was last ingested for each article.
 
 See the "Persistent vector store" section of docs/scaling_strategy.md (#2):
-`IngestionManifest` maps each article's `source_uri` (its Wikipedia title) to the
+`IngestionManifest` maps each article's `source` (its Wikipedia title) to the
 revision ID last ingested, persisted as a local JSON file, so re-running the
 ingestion script only re-fetches, re-chunks, and re-embeds pages whose revision
 changed since the previous run.
