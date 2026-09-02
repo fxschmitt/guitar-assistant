@@ -91,9 +91,26 @@ flowchart LR
 
 Cross-manufacturer/section-variant LLM extraction, cost containment beyond a
 single `.env` key, and the two-stage fuzzy/LLM router (§5–§6 of
-scaling_strategy.md) remain future work — the vector store above is not yet
-wired into `agent.py`'s query-time retrieval, which still reads from
-`data.py`'s 3-file demo corpus.
+scaling_strategy.md) remain future work.
+
+**Corpus selection at query time:** `retriever.load_corpus` picks between this
+persistent store and the 3-file demo corpus, controlled by the
+`GUITAR_ASSISTANT_CORPUS` environment variable (`"wikipedia"`, the default, or
+`"demo"`) — see [usage.md](usage.md#running-the-cli). Both `main()` and
+`GuitarAssistantModel.load_context` call it instead of reading `data.py` and
+building an in-memory store directly. The persistent Wikipedia corpus is the
+default runtime path; `data.py`/`build_vector_store`/the 3 spec sheets remain
+available as an explicit demo/test fixture (`GUITAR_ASSISTANT_CORPUS=demo`),
+used by the unit test suite and `usage.md`'s quick-start, not by a default
+`guitar-assistant` invocation. For the `"wikipedia"` corpus, the available
+guitar models are read back from what's actually indexed in `.chroma/`
+(`retriever.list_indexed_guitar_models`) rather than from `IngestionManifest`,
+since the manifest is an ingestion-time bookkeeping detail and by query time
+there is no in-memory `documents` list to derive them from otherwise. A
+default invocation before any `guitar-assistant-ingest` run has populated
+`.chroma/` sees an empty corpus (`available_guitar_models == []`), so the
+router's schema only ever offers the "all" sentinel and retrieval returns
+nothing — run ingestion at least once before relying on the default.
 
 ## Agent graph (LangGraph, per query)
 
@@ -104,12 +121,20 @@ pipeline, and a shared `reject` fallback reachable from three points in the grap
    encoded to UTF-8 (e.g. a lone UTF-16 surrogate from upstream mis-decoding),
    turning it into a clean user-facing message instead of a raw error deep inside
    the HTTP client.
-2. **`route`** — an OpenAI chat call with structured output that classifies which
-   guitar model(s) the query concerns ("telecaster", "stratocaster", "sg", or
-   "all" for cross-manufacturer/ambiguous questions).
+2. **`route`** — two-stage (implements docs/scaling_strategy.md #6, for corpora
+   too large to enumerate as a single-call structured-output schema):
+   - **Fuzzy match first** (`agent._fuzzy_match_guitar_model`): matches the
+     query's text against the indexed `guitar_model` slugs via `rapidfuzz`, with
+     no LLM call at all. Covers most real queries, since people usually name a
+     model directly (e.g. "Stratocaster").
+   - **LLM fallback only on a miss** (`agent._shortlist_candidates` +
+     structured output): a cheap unfiltered vector pre-search shortlists a
+     handful of candidate `guitar_model` values (`_SHORTLIST_SIZE`, default 5),
+     and only *that* shortlist — plus "all" for cross-manufacturer/ambiguous
+     questions — becomes the structured-output schema's valid values. The
+     schema and routing prompt stay small regardless of total corpus size.
 3. **`retrieve`** — similarity search against the vector store, filtered to the
-   model(s) the router selected. "All" simply spans more chunks — natural given
-   there are only 3 to begin with.
+   model(s) the router selected. "All" spans every indexed chunk.
 4. **`generate`** — OpenAI synthesizes the final answer from the retrieved
    chunk(s), citing which spec sheet(s) it came from.
 5. **`reject`** — turns a recorded `error` into a graceful, user-facing answer
@@ -131,14 +156,17 @@ pipeline, and a shared `reject` fallback reachable from three points in the grap
 flowchart LR
     Q[User query] --> V{{"validate node<br/>empty / unencodable?"}}
     V -->|invalid| REJ[reject node<br/>error to answer]
-    V -->|valid| R{{"route node<br/>(OpenAI, structured output)<br/>which model(s)?"}}
-    R -->|BadRequestError| REJ
-    R -->|single model| RT[retrieve node<br/>similarity search<br/>filtered to that model]
-    R -->|multiple / unclear| RTA[retrieve node<br/>similarity search<br/>across all 3 docs]
+    V -->|valid| FM{{"route node:<br/>fuzzy match<br/>(rapidfuzz, no LLM call)"}}
+    FM -->|confident match| RT[retrieve node<br/>similarity search<br/>filtered to that model]
+    FM -->|miss| SL["route node:<br/>vector pre-search<br/>shortlist candidates"]
+    SL --> LLMR{{"route node:<br/>OpenAI, structured output<br/>scoped to shortlist"}}
+    LLMR -->|BadRequestError| REJ
+    LLMR -->|single model| RT
+    LLMR -->|multiple / unclear| RTA[retrieve node<br/>similarity search<br/>across all indexed chunks]
     RT --> G[generate node<br/>OpenAI synthesizes<br/>grounded, cited answer]
     RTA --> G
     G -->|BadRequestError| REJ
-    G --> A[Answer + source spec sheets]
+    G --> A[Answer + source citations]
     REJ --> A
 ```
 
@@ -222,7 +250,8 @@ flowchart LR
 src/guitar_assistant/
 ├── __init__.py       # package entrypoint / CLI (`guitar-assistant "question"`)
 ├── data.py           # load the 3 markdown files, attach metadata, build Documents
-├── retriever.py       # build/open the Chroma store: ephemeral (demo corpus) or persistent
+├── retriever.py       # build/open the Chroma store: ephemeral (demo corpus) or persistent;
+                         # load_corpus picks between them (GUITAR_ASSISTANT_CORPUS)
 ├── agent.py           # LangGraph state, route/retrieve/generate nodes, compiled graph
 ├── mlflow_model.py    # GuitarAssistantModel (pyfunc wrapper) + a log_model() helper
 ├── evaluation.py      # golden dataset loading + grade_answer/correctness scorer

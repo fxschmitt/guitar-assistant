@@ -98,5 +98,8 @@
   it to `docs/testing.md`, mirroring the existing entries (what it covers, cost/
   network profile, run command).
 - A change that fully implements a numbered item in `docs/scaling_strategy.md`
-  → fold that item into `docs/architecture.md`/`docs/testing.md` as current
-  behavior, not just leave it described as a future plan.
+  → fold that item into current behavior across every doc that describes it,
+  not just leave it described as a future plan or an open limitation. In
+  practice: describe it as current behavior in `docs/architecture.md`/
+  `docs/testing.md`, and remove or rewrite any now-resolved bullet in
+  `docs/limitations.md` (and any other doc making the same now-false claim).

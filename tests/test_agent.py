@@ -14,7 +14,9 @@ from guitar_assistant.agent import (
     ErrorCheck,
     _build_route_decision_schema,
     _check_query,
+    _fuzzy_match_guitar_model,
     _route_after_check,
+    _shortlist_candidates,
     build_agent,
     generate,
     reject,
@@ -51,26 +53,90 @@ def test_build_route_decision_schema_rejects_unknown_model():
         schema(guitar_model="les_paul")
 
 
-def test_route_sets_guitar_model_from_classifier_decision():
-    # GIVEN a classifier that always decides on the "stratocaster" guitar model
-    schema = _build_route_decision_schema(_AVAILABLE_GUITAR_MODELS)
+@pytest.mark.parametrize(
+    ("query", "expected_match"),
+    [
+        ("What is the scale length of the Stratocaster?", "stratocaster"),
+        ("What is the SG's body wood?", "sg"),
+        ("Tell me about the Telecaster's pickups.", "telecaster"),
+        ("Which guitar has better sustain?", None),
+        ("Tell me about the Strat pickups", None),
+    ],
+)
+def test_fuzzy_match_guitar_model(query: str, expected_match: str | None):
+    # GIVEN the demo corpus's available guitar models
+    # WHEN fuzzy-matching a query that confidently names one, or doesn't
+    # THEN the matched slug (or None, on a miss) is returned
+    assert _fuzzy_match_guitar_model(query, _AVAILABLE_GUITAR_MODELS) == expected_match
 
-    def classify(query: str):
-        return schema(guitar_model="stratocaster")
+
+def test_fuzzy_match_guitar_model_returns_none_when_no_models_are_available():
+    # GIVEN no indexed guitar models at all
+    # WHEN fuzzy-matching any query
+    # THEN there is nothing to match against, so it returns None
+    assert _fuzzy_match_guitar_model("What is the scale length?", []) is None
+
+
+def test_shortlist_candidates_returns_distinct_models_in_similarity_rank_order(vector_store):
+    # GIVEN a vector store indexing one document per guitar model
+    matching_model = _AVAILABLE_GUITAR_MODELS[1]
+    # WHEN shortlisting candidates for a query matching one document's guitar model
+    shortlist = _shortlist_candidates(matching_model, vector_store, search_count=1)
+    # THEN that guitar model is the (only) shortlisted candidate
+    assert shortlist == [matching_model]
+
+
+def test_shortlist_candidates_deduplicates_and_caps_at_shortlist_size(vector_store):
+    # GIVEN a vector store indexing one document per guitar model
+    # WHEN shortlisting with a search wide enough to see every document, capped below the
+    # corpus size
+    shortlist = _shortlist_candidates(
+        "guitar", vector_store, search_count=len(_AVAILABLE_GUITAR_MODELS), shortlist_size=1
+    )
+    # THEN no more than shortlist_size distinct models are returned
+    assert len(shortlist) == 1
+
+
+def test_route_returns_the_fuzzy_match_without_calling_shortlist_then_classify():
+    # GIVEN a confident fuzzy match and a shortlist_then_classify that records whether
+    # it was ever called
+    calls = []
+
+    def shortlist_then_classify(query: str) -> str:
+        calls.append(query)
+        return "sg"
 
     # WHEN routing a query
-    result = route({"query": "What is the scale length?"}, classify)
-    # THEN the state update carries the classifier's decision
+    result = route(
+        {"query": "What is the scale length?"},
+        lambda _query: "stratocaster",
+        shortlist_then_classify,
+    )
+    # THEN the fuzzy match is used directly, with no fallback classification
     assert result == {"guitar_model": "stratocaster"}
+    assert not calls
 
 
-def test_route_sets_error_when_classifier_raises_bad_request():
-    # GIVEN a classifier that fails with a non-retryable API error
-    def classify(query: str):
+def test_route_falls_through_to_shortlist_then_classify_on_a_fuzzy_match_miss():
+    # GIVEN a fuzzy-match miss
+    # WHEN routing a query
+    result = route(
+        {"query": "Which guitar has better sustain?"}, lambda _query: None, lambda _query: "sg"
+    )
+    # THEN the shortlist_then_classify decision is used
+    assert result == {"guitar_model": "sg"}
+
+
+def test_route_sets_error_when_shortlist_then_classify_raises_bad_request():
+    # GIVEN a fuzzy-match miss and a shortlist_then_classify that fails with a
+    # non-retryable API error
+    def shortlist_then_classify(query: str) -> str:
         raise _FAKE_BAD_REQUEST_ERROR
 
     # WHEN routing a query
-    result = route({"query": "What is the scale length?"}, classify)
+    result = route(
+        {"query": "Which guitar has better sustain?"}, lambda _query: None, shortlist_then_classify
+    )
     # THEN the state update carries the error instead of a guitar_model
     assert result == {"error": str(_FAKE_BAD_REQUEST_ERROR)}
 
@@ -187,3 +253,47 @@ def test_build_agent_rejects_an_empty_query_without_calling_the_chat_model(
     assert result["answer"] == "I couldn't answer that question: The question was empty."
     assert "guitar_model" not in result
     assert "documents" not in result
+
+
+def test_build_agent_routes_a_confident_fuzzy_match_without_calling_the_chat_model(
+    vector_store, available_guitar_models, fake_chat_model
+):
+    # GIVEN a compiled agent, whose fake chat model would answer any classification call
+    # with "stratocaster" (the fixture's default), but is only wired for routing on a
+    # fuzzy-match miss
+    agent = build_agent(vector_store, available_guitar_models, llm=fake_chat_model)
+    # WHEN invoking it with a query that confidently names a guitar model by name
+    result = agent.invoke({"query": "What is the SG's body wood?"})
+    # THEN it routed via the fuzzy match, retrieving the SG's document, and the chat
+    # model's structured-output classification was never invoked
+    assert result["guitar_model"] == "sg"
+    assert not fake_chat_model._structured_output_calls
+
+
+def test_build_agent_falls_through_to_shortlist_and_classify_on_a_fuzzy_match_miss(
+    vector_store, available_guitar_models, fake_chat_model
+):
+    # GIVEN a compiled agent
+    agent = build_agent(vector_store, available_guitar_models, llm=fake_chat_model)
+    # WHEN invoking it with a query naming no guitar model directly
+    result = agent.invoke({"query": "Which guitar has better sustain?"})
+    # THEN it fell through to the shortlist+LLM path, calling the chat model once, and
+    # used its (fixture default "stratocaster") decision
+    assert result["guitar_model"] == "stratocaster"
+    assert len(fake_chat_model._structured_output_calls) == 1
+
+
+def test_build_agent_scopes_the_fallback_schema_to_the_shortlist(
+    vector_store, available_guitar_models, fake_chat_model
+):
+    # GIVEN a compiled agent over a corpus small enough that the shortlist covers every
+    # available guitar model
+    agent = build_agent(vector_store, available_guitar_models, llm=fake_chat_model)
+    # WHEN invoking it with a query naming no guitar model directly, falling through to
+    # the shortlist+LLM path
+    agent.invoke({"query": "Which guitar has better sustain?"})
+    # THEN the structured-output schema built for that call is restricted to the
+    # shortlisted models plus the "all" sentinel, not left open to arbitrary values
+    (fallback_schema,) = fake_chat_model._structured_output_calls
+    valid_guitar_models = set(fallback_schema.model_fields["guitar_model"].annotation.__args__)
+    assert valid_guitar_models == {*available_guitar_models, "all"}

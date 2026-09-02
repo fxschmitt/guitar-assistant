@@ -27,8 +27,7 @@ from mlflow.types import ColSpec, Schema
 from pydantic import SecretStr
 
 from guitar_assistant.agent import CHAT_MODEL, build_agent
-from guitar_assistant.data import load_documents
-from guitar_assistant.retriever import EMBEDDING_MODEL, build_vector_store
+from guitar_assistant.retriever import EMBEDDING_MODEL, load_corpus
 
 _EXPERIMENT_NAME: Final = "guitar-assistant"
 _ARTIFACT_PATH: Final = "guitar_assistant"
@@ -147,11 +146,7 @@ class GuitarAssistantModel(PythonModel):  # pylint: disable=abstract-method
                 artifacts to resolve.
         """
         mlflow_langchain.autolog()
-        documents = load_documents()
-        available_guitar_models = sorted(
-            {document.metadata["guitar_model"] for document in documents}
-        )
-        vector_store = build_vector_store(documents, embeddings=self._embeddings)
+        vector_store, available_guitar_models = load_corpus(embeddings=self._embeddings)
         self._agent = build_agent(vector_store, available_guitar_models, llm=self._llm)
 
     # `PythonModel.predict` carries no return annotation, so pyright infers `None` from its

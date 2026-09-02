@@ -1,14 +1,19 @@
 # Scaling Strategy
 
-The current implementation (see [architecture.md](architecture.md)) is
-deliberately minimal — one chunk per document, an in-memory Chroma store, a
-structured-output router over 3 known models — which is the right design for
-a 3-document demo corpus. This document describes what changes to grow it
+This document describes the design that grows the original 3-document demo
+(one chunk per document, an in-memory Chroma store, a structured-output router
+over 3 known models — the right design for that demo corpus, but not further)
 into a **hobby chatbot covering every electric guitar model with a Wikipedia
 article** — on the order of a few hundred to a few thousand documents, still
-run by a single person on a single `OPENAI_API_KEY`. See
-[limitations.md](limitations.md) for the specific problems with the current
-design that motivate each change below.
+run by a single person on a single `OPENAI_API_KEY`.
+
+**Status:** §1-4 and §6 below are implemented and are current behavior — see
+[architecture.md](architecture.md), which describes each as it works today, not
+as a plan. Only §5 (cost containment) remains open; the demo corpus/in-memory
+store from the paragraph above still exist too, but only as an explicit
+test/quick-start fixture (`GUITAR_ASSISTANT_CORPUS=demo`), not the default
+runtime path. This document is kept as the design rationale for *why* each
+piece looks the way it does, not as a to-do list.
 
 Every fix below stays proportionally light for that target: a single
 ingestion script and a local persistent store are enough — there's no need

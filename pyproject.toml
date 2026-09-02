@@ -19,6 +19,7 @@ dependencies = [
     "mlflow>=3.14.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "rapidfuzz>=3.14.6",
     "wikitextparser>=1.0.3",
 ]
 

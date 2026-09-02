@@ -134,6 +134,29 @@ count, not `max_requests` alone. Needs both `WIKIPEDIA_CONTACT_EMAIL` and a real
 uv run pytest -m integration tests/ingestion/test_ingestion_integration.py
 ```
 
+## Wikipedia-backed agent integration test
+
+The tests above each check one stage in isolation (ingestion writes real data;
+unit tests check routing/retrieval/generation against fakes); none of them prove
+ingestion and the agent actually compose against the same store. That's what
+`tests/test_wikipedia_agent_integration.py` checks: a real ingestion run over
+`Category:Fender Stratocasters` (the same small, known leaf category as the
+ingestion pipeline integration test above) populates a persistent Chroma store,
+`retriever.load_corpus` reopens that store in a separate call — mirroring how a
+real query-time process never shares an in-memory `documents` list with the
+ingestion run that wrote it — and the real, OpenAI-backed agent (`agent.build_agent`)
+answers a question against it. Also exercises the two-stage router's fuzzy-match
+path (docs/scaling_strategy.md #6) against a real `guitar_model` slug, asserting
+the query routed without a fallback LLM classification call.
+
+Needs both `WIKIPEDIA_CONTACT_EMAIL` and a real `OPENAI_API_KEY` (ingestion embeds
+the real articles it fetches, and the agent's chat/embedding calls are real too),
+so it's `@pytest.mark.integration` and excluded by default:
+
+```bash
+uv run pytest -m integration tests/test_wikipedia_agent_integration.py
+```
+
 ## Packaging test
 
 MLflow doesn't play well with this repo's `uv`-managed `src/` layout out of the

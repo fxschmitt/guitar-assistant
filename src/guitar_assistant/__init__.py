@@ -1,10 +1,9 @@
 """CLI entrypoints: answer a query, or log the agent as a versioned MLflow model.
 
-See the README's "Package layout" section: `main` wires `data.load_documents`,
-`retriever.build_vector_store`, and `agent.build_agent` together and exposes the
-`guitar-assistant "question"` console script; `package` exposes the
-`guitar-assistant-package` console script, logging a fresh `GuitarAssistantModel` via
-`mlflow_model.log_model`.
+See the README's "Package layout" section: `main` wires `retriever.load_corpus`
+and `agent.build_agent` together and exposes the `guitar-assistant "question"`
+console script; `package` exposes the `guitar-assistant-package` console script,
+logging a fresh `GuitarAssistantModel` via `mlflow_model.log_model`.
 """
 
 from __future__ import annotations
@@ -15,9 +14,8 @@ import click
 from mlflow import langchain as mlflow_langchain
 
 from guitar_assistant.agent import build_agent
-from guitar_assistant.data import load_documents
 from guitar_assistant.mlflow_model import configure_default_tracking_uri, log_model
-from guitar_assistant.retriever import build_vector_store
+from guitar_assistant.retriever import load_corpus
 
 _logger = logging.getLogger(__name__)
 
@@ -30,9 +28,7 @@ def main(query: str) -> None:
     configure_default_tracking_uri()
     mlflow_langchain.autolog()
 
-    documents = load_documents()
-    available_guitar_models = sorted({document.metadata["guitar_model"] for document in documents})
-    vector_store = build_vector_store(documents)
+    vector_store, available_guitar_models = load_corpus()
     agent = build_agent(vector_store, available_guitar_models)
 
     result = agent.invoke({"query": query})

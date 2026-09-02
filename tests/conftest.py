@@ -8,11 +8,25 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
+from pydantic import PrivateAttr
 import pytest
 
-from guitar_assistant.retriever import build_vector_store
+from guitar_assistant.retriever import CORPUS_ENV_VAR, DEMO_CORPUS, build_vector_store
 
 AVAILABLE_GUITAR_MODELS: Final = ("telecaster", "stratocaster", "sg")
+
+
+@pytest.fixture(autouse=True)
+def _default_to_demo_corpus(monkeypatch):
+    """Default every test to the demo corpus, network-free and independent of `.chroma/`.
+
+    Production defaults to the persistent Wikipedia corpus (see
+    `retriever.load_corpus`), but tests should stay network-free and isolated from
+    whatever a real `guitar-assistant-ingest` run may have written locally. Tests
+    that specifically target the `"wikipedia"` selection override this within the
+    test via their own `monkeypatch.setenv`/`delenv` call.
+    """
+    monkeypatch.setenv(CORPUS_ENV_VAR, DEMO_CORPUS)
 
 
 class FakeChatModel(BaseChatModel):
@@ -24,6 +38,9 @@ class FakeChatModel(BaseChatModel):
 
     guitar_model: str
     answer: str
+    # Records each schema passed to with_structured_output, so routing tests can assert
+    # whether the (fake) LLM was invoked at all, and which shortlist it was scoped to.
+    _structured_output_calls: list[type] = PrivateAttr(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -42,6 +59,7 @@ class FakeChatModel(BaseChatModel):
         self, schema: dict[str, Any] | type, *, include_raw: bool = False, **kwargs: Any
     ) -> Runnable:
         assert isinstance(schema, type)
+        self._structured_output_calls.append(schema)
         return RunnableLambda(lambda _input: schema(guitar_model=self.guitar_model))
 
 
