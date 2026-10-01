@@ -1,7 +1,8 @@
 # Testing & Validation Strategy
 
-Four layers, each validating a different claim, at different cost/speed tiers.
-Only unit tests run by default.
+A layer of fast, network-free unit tests, plus a set of integration tests, each
+validating a different claim against real external APIs (OpenAI and/or
+Wikipedia) at its own cost/speed tier. Only unit tests run by default.
 
 ## Unit tests
 
@@ -15,18 +16,34 @@ would gate on.
 ## End-to-end test / MLflow evaluation
 
 Unit tests can't validate whether the compiled agent answers real questions
-correctly and quickly enough. `tests/test_end_to_end.py` runs the agent against
-`task/test-questions.csv` (a golden dataset of 10 questions with expected answers
-and evaluation criteria) through the real OpenAI-backed graph, using
-`mlflow.genai.evaluate()` rather than a manual loop, and asserts:
+correctly and quickly enough, or catch it getting worse as it's extended. That's
+what `tests/test_end_to_end.py` guards against: it runs the real, OpenAI-backed
+agent — built against a frozen snapshot of real Wikipedia article content
+(`tests/fixtures/wikipedia_eval_corpus.json`; see
+`scripts/build_wikipedia_eval_fixture.py` for how it was built and how to
+deliberately refresh it) — through `mlflow.genai.evaluate()` against
+`tests/fixtures/wikipedia_golden_questions.csv` (a golden dataset of 10
+single-model questions with expected answers and evaluation criteria, half
+routed by a direct fuzzy name match and half worded to miss that match and
+exercise the shortlist+LLM routing fallback instead), and asserts:
 
-- **Accuracy ≥ 8/10** — `Expected_Answer`/`Evaluation_Criteria` are free text, so
+- **Accuracy ≥ 9/10** — `Expected_Answer`/`Evaluation_Criteria` are free text, so
   grading uses `correctness` ([evaluation.py](../src/guitar_assistant/evaluation.py)),
   a custom `mlflow.genai` scorer wrapping an LLM-as-judge call (a second, cheap
-  OpenAI call scoring the agent's actual answer) rather than exact match.
+  OpenAI call scoring the agent's actual answer) rather than exact match. The bar
+  is calibrated from an actual observed run (10/10 passed), not picked in
+  advance, with one slot of slack for LLM-judge/model noise.
 - **Latency < 10s per query** — read from `execution_duration` on each row of
   `EvaluationResult.result_df`, i.e. the trace `mlflow.genai.evaluate()` captures
   automatically for every `predict_fn` call.
+
+The corpus is a committed fixture rather than live Wikipedia or whatever happens
+to be locally ingested, specifically so this test stays a reliable regression
+guard: a run that can fail because an article's real content drifted (not
+because the agent regressed) teaches you to ignore red runs. It's rebuilt into
+an ephemeral in-memory vector store (real OpenAI embeddings, no live Wikipedia
+fetch) on every run via `retriever.build_vector_store`, so there's no
+dependency on a previously-populated `.chroma/`.
 
 `correctness` is a custom scorer rather than MLflow's builtin `Correctness` or
 `Guidelines` judges: the golden dataset carries both a reference `expected_answer`
@@ -35,14 +52,15 @@ grade separately. Running both would cost two LLM calls per row for two disjoint
 scores; `correctness` (via `grade_answer`) weighs both signals in one call, one
 score. Prebuilt RAG-specific judges (`RetrievalGroundedness`, `RetrievalRelevance`)
 were considered and skipped for the same reason noted in
-[limitations.md](limitations.md): with 3 documents and near-zero retrieval
-ambiguity, they'd check something already trivially true in this corpus.
+[limitations.md](limitations.md): with a handful of documents and near-zero
+retrieval ambiguity, they'd check something already trivially true in this
+fixture.
 
 Because this runs through `mlflow.genai.evaluate()`, the same invocation that
-proves the Tier 1 accuracy/latency acceptance criteria also logs an MLflow
-evaluation run — metrics (`correctness/mean`), per-row traces, and assessments —
-fulfilling the Tier 3 "Comprehensive Evaluation Framework" bonus rather than being
-a separate mechanism. Inspect it the same way as other runs/traces (see
+checks the accuracy/latency bars also logs an MLflow evaluation run — metrics
+(`correctness/mean`), per-row traces, and assessments — that you can inspect over
+time to see whether the agent's measured performance is trending up or down as
+it's extended. Inspect it the same way as other runs/traces (see
 [architecture.md](architecture.md#inspecting-agent-execution-logs)), under the
 `guitar-assistant-evaluation` experiment.
 
@@ -57,7 +75,7 @@ uv run pytest -m integration tests/test_end_to_end.py
 ## Judge calibration test
 
 The end-to-end test's accuracy claim is only as good as the judge behind
-`correctness`. Passing 8/10 golden questions means nothing if the judge itself
+`correctness`. Passing 9/10 golden questions means nothing if the judge itself
 is miscalibrated — e.g. rubber-stamping wrong answers (false positives) or
 rejecting correct ones over minor wording differences (false negatives).
 `tests/test_evaluation_integration.py` checks the judge directly, independent
@@ -81,8 +99,8 @@ uv run pytest -m integration tests/test_evaluation_integration.py
 
 ## Wikipedia client integration test
 
-`tests/test_wikipedia_client_integration.py` checks
-[wikipedia_client.py](../src/guitar_assistant/wikipedia_client.py) against the
+`tests/ingestion/test_wikipedia_client_integration.py` checks
+[wikipedia_client.py](../src/guitar_assistant/ingestion/wikipedia_client.py) against the
 real Wikipedia API: that `walk_category` finds real article titles under
 `Category:Electric guitars`, that walking from
 `ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY` at `max_depth=2` (the entry point
@@ -94,13 +112,13 @@ a known article. No API key needed, but it hits the network, so it's
 `max_requests` (5-15), so a run can never wander far into the real category tree:
 
 ```bash
-uv run pytest -m integration tests/test_wikipedia_client_integration.py
+uv run pytest -m integration tests/ingestion/test_wikipedia_client_integration.py
 ```
 
 ## Infobox parser integration test
 
-`tests/test_infobox_parser_integration.py` checks
-[infobox_parser.py](../src/guitar_assistant/infobox_parser.py) against real
+`tests/ingestion/test_infobox_parser_integration.py` checks
+[infobox_parser.py](../src/guitar_assistant/ingestion/infobox_parser.py) against real
 Wikipedia articles: that `parse_article` extracts sensible fields (e.g.
 `manufacturer`) and clean, markup-free Markdown from a known article, and that
 running it over a real batch of titles from the by-manufacturer entry point
@@ -111,13 +129,13 @@ hits the network, so it's `@pytest.mark.integration` and excluded by default.
 `max_requests` is capped (5-40) throughout:
 
 ```bash
-uv run pytest -m integration tests/test_infobox_parser_integration.py
+uv run pytest -m integration tests/ingestion/test_infobox_parser_integration.py
 ```
 
 ## Ingestion pipeline integration test
 
-`tests/test_ingestion_integration.py` checks
-[ingestion.py](../src/guitar_assistant/ingestion.py) end to end against the real
+`tests/ingestion/test_ingestion_integration.py` checks
+[pipeline.py](../src/guitar_assistant/ingestion/pipeline.py) end to end against the real
 Wikipedia and OpenAI APIs: that `run_ingestion` walks a real category, chunks
 and embeds real articles into a persistent Chroma store, and that a second run
 over the same category ingests nothing (every title is already up to date per
@@ -131,7 +149,30 @@ count, not `max_requests` alone. Needs both `WIKIPEDIA_CONTACT_EMAIL` and a real
 `@pytest.mark.integration` and excluded by default:
 
 ```bash
-uv run pytest -m integration tests/test_ingestion_integration.py
+uv run pytest -m integration tests/ingestion/test_ingestion_integration.py
+```
+
+## Wikipedia-backed agent integration test
+
+The tests above each check one stage in isolation (ingestion writes real data;
+unit tests check routing/retrieval/generation against fakes); none of them prove
+ingestion and the agent actually compose against the same store. That's what
+`tests/test_wikipedia_agent_integration.py` checks: a real ingestion run over
+`Category:Fender Stratocasters` (the same small, known leaf category as the
+ingestion pipeline integration test above) populates a persistent Chroma store,
+`retriever.load_corpus` reopens that store in a separate call — mirroring how a
+real query-time process never shares an in-memory `documents` list with the
+ingestion run that wrote it — and the real, OpenAI-backed agent (`agent.build_agent`)
+answers a question against it. Also exercises the two-stage router's fuzzy-match
+path (docs/scaling_strategy.md #6) against a real `guitar_model` slug, asserting
+the query routed without a fallback LLM classification call.
+
+Needs both `WIKIPEDIA_CONTACT_EMAIL` and a real `OPENAI_API_KEY` (ingestion embeds
+the real articles it fetches, and the agent's chat/embedding calls are real too),
+so it's `@pytest.mark.integration` and excluded by default:
+
+```bash
+uv run pytest -m integration tests/test_wikipedia_agent_integration.py
 ```
 
 ## Packaging test

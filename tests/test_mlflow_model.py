@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
@@ -18,6 +19,7 @@ import pytest
 
 import guitar_assistant.mlflow_model as mlflow_model_module
 from guitar_assistant.mlflow_model import GuitarAssistantModel, log_model
+from guitar_assistant.retriever import open_persistent_vector_store
 
 
 @pytest.fixture(name="tracking_uri")
@@ -29,6 +31,29 @@ def fixture_tracking_uri(tmp_path) -> Iterator[str]:
     mlflow.set_tracking_uri(uri)
     yield uri
     mlflow.set_tracking_uri("")
+
+
+@pytest.fixture(autouse=True)
+def _seed_persistent_store(fake_embeddings):
+    """Seed the (per-test, isolated) persistent store with one stratocaster document.
+
+    `GuitarAssistantModel.load_context` calls `retriever.load_corpus`, which opens the
+    persistent store at its default, cwd-relative path and derives
+    `available_guitar_models` from what's actually indexed there. `conftest.py`'s
+    autouse `chdir` fixture already isolates that path to an empty temp directory per
+    test; without a document seeded here, every test below would see an empty corpus
+    (no models to route to) instead of the "stratocaster" `fake_chat_model` is fixed
+    to route to.
+    """
+    vector_store = open_persistent_vector_store(embeddings=fake_embeddings)
+    vector_store.add_documents(
+        [
+            Document(
+                page_content="Stratocaster spec sheet content.",
+                metadata={"guitar_model": "stratocaster", "source": "stratocaster.md"},
+            )
+        ]
+    )
 
 
 def test_load_context_compiles_an_agent_from_injected_fakes(fake_embeddings, fake_chat_model):

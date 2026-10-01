@@ -5,64 +5,39 @@ and [VSCode's Mermaid preview extension](https://marketplace.visualstudio.com/it
 
 ## Design philosophy
 
-The source corpus is three small Markdown files (`Fender_Telecaster.md`,
-`Fender_Stratocaster.md`, `Gibson_SG.md`), each well under a page. Most
-RAG advice (fine-grained chunking, re-ranking, hybrid search, large vector-store
-infra) targets corpora with thousands of documents; applying that machinery here
-would add complexity without adding correctness. The design below is deliberately
-minimal for this corpus size — every corner cut is named explicitly in
-[limitations.md](limitations.md), so it's simple on purpose, not simple by
-omission.
-
 **Model choice:** OpenAI for both routing/generation and embeddings — one
 provider, one API key, minimal setup friction.
 
-## Indexing pipeline (offline, run once at startup)
-
-Chunking strategy: **one chunk per source document** (3 chunks total), not
-sub-chunked by section. Each file already fits comfortably in an LLM context
-window, and several answers (e.g. exact scale length, pickup configuration) live
-inside Markdown tables — splitting by section risks cutting a table in half.
-Whole-document chunking guarantees every table stays intact. Each chunk carries
-metadata (`manufacturer`, `guitar_model`) used for filtering in the routing step
-below.
-
-```mermaid
-flowchart LR
-    D1[Fender_Telecaster.md] --> L[Loader<br/>attach manufacturer/guitar_model metadata]
-    D2[Fender_Stratocaster.md] --> L
-    D3[Gibson_SG.md] --> L
-    L --> E[OpenAI embeddings API<br/>text-embedding-3-small]
-    E --> V[(Chroma<br/>in-memory vector store)]
-```
+The persistent Wikipedia corpus (below) is the only runtime path; every corner
+cut at that corpus size is named explicitly in [limitations.md](limitations.md),
+so what's simple remains simple on purpose, not simple by omission.
 
 ## Wikipedia ingestion pipeline
 
-Implements docs/scaling_strategy.md #1–#3: growing the corpus beyond the 3
-hand-written files above by ingesting every electric guitar model with a
-Wikipedia article, into a separate, persistent Chroma collection.
+Implements docs/scaling_strategy.md #1–#3: ingesting every electric guitar
+model with a Wikipedia article into a persistent Chroma collection.
 
-- **Discovery + fetch** ([wikipedia_client.py](../src/guitar_assistant/wikipedia_client.py)):
+- **Discovery + fetch** ([wikipedia_client.py](../src/guitar_assistant/ingestion/wikipedia_client.py)):
   `WikipediaClient.walk_category` enumerates candidate titles by walking a
   category's subcategory tree (in practice,
   `ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY`); `fetch_wikitext` pulls one
   article's wikitext and revision ID.
-- **Parse** ([infobox_parser.py](../src/guitar_assistant/infobox_parser.py)):
+- **Parse** ([infobox_parser.py](../src/guitar_assistant/ingestion/infobox_parser.py)):
   `parse_article` extracts the `Infobox Guitar model` template's fields and
   converts the rest into clean Markdown (headings, stripped wiki markup,
   boilerplate sections truncated). Returns `None` for pages with no matching
   infobox — the filter that separates real guitar-model articles (which
   `walk_category` alone can't) from manufacturer overview pages, "List of
   ..." pages, and disambiguation pages.
-- **Chunk** ([chunking.py](../src/guitar_assistant/chunking.py)): `chunk_article`
+- **Chunk** ([chunking.py](../src/guitar_assistant/ingestion/chunking.py)): `chunk_article`
   splits a `ParsedArticle` into an **overview chunk** (a rendered spec table
   from the infobox's spec fields, plus the article's lead paragraph) and one
   **section chunk** per `##`/`###` heading, via
   `MarkdownHeaderTextSplitter`. Every chunk is tagged with
-  `manufacturer`/`guitar_model`/`source_uri` metadata, `guitar_model` being a
+  `manufacturer`/`guitar_model`/`source` metadata, `guitar_model` being a
   slug of the full article title (not a bare model word) so two
   manufacturers reusing a model name — "Special", "Custom" — can't collide.
-- **Store + track revisions** ([manifest.py](../src/guitar_assistant/manifest.py),
+- **Store + track revisions** ([manifest.py](../src/guitar_assistant/ingestion/manifest.py),
   [retriever.py](../src/guitar_assistant/retriever.py)):
   `open_persistent_vector_store` opens a Chroma collection backed by a local
   `.chroma/` directory (gitignored, like `mlflow.db`), so embeddings survive
@@ -70,7 +45,7 @@ Wikipedia article, into a separate, persistent Chroma collection.
   last-ingested revision ID as JSON (`ingestion_manifest.json`, also
   gitignored); a re-run skips any title whose fetched revision already
   matches.
-- **Orchestrate** ([ingestion.py](../src/guitar_assistant/ingestion.py)):
+- **Orchestrate** ([pipeline.py](../src/guitar_assistant/ingestion/pipeline.py)):
   `run_ingestion` wires the above together — walk, fetch, parse, chunk, and
   upsert only new-or-changed articles (clearing an article's previous chunks
   first, since a changed revision can add, remove, or rename sections) —
@@ -89,11 +64,22 @@ flowchart LR
     STORE --> MARK["manifest.mark_ingested"]
 ```
 
-Cross-manufacturer/section-variant LLM extraction, cost containment beyond a
-single `.env` key, and the two-stage fuzzy/LLM router (§5–§6 of
-scaling_strategy.md) remain future work — the vector store above is not yet
-wired into `agent.py`'s query-time retrieval, which still reads from
-`data.py`'s 3-file demo corpus.
+Cross-manufacturer/section-variant LLM extraction and cost containment beyond
+a single `.env` key (§5 of scaling_strategy.md) remain future work.
+
+**Corpus selection at query time:** `retriever.load_corpus` opens the
+persistent store and derives `available_guitar_models` from what's actually
+indexed there (`retriever.list_indexed_guitar_models`) rather than from
+`IngestionManifest`, since the manifest is an ingestion-time bookkeeping detail
+and by query time there is no in-memory `documents` list to derive them from
+otherwise. `main()`, `GuitarAssistantModel.load_context`, and the Streamlit
+exploration UI (`app.py`, see [usage.md](usage.md#exploration-ui)) all call it
+instead of building a vector store directly. A default invocation before any
+`guitar-assistant-ingest` run has populated `.chroma/` sees an empty corpus
+(`available_guitar_models == []`): the CLI/packaged model route every query to
+the "all" sentinel against empty retrieval, while `app.py` detects this and
+shows an empty-state message instead of running the agent at all — run
+ingestion at least once before relying on the default.
 
 ## Agent graph (LangGraph, per query)
 
@@ -104,12 +90,20 @@ pipeline, and a shared `reject` fallback reachable from three points in the grap
    encoded to UTF-8 (e.g. a lone UTF-16 surrogate from upstream mis-decoding),
    turning it into a clean user-facing message instead of a raw error deep inside
    the HTTP client.
-2. **`route`** — an OpenAI chat call with structured output that classifies which
-   guitar model(s) the query concerns ("telecaster", "stratocaster", "sg", or
-   "all" for cross-manufacturer/ambiguous questions).
+2. **`route`** — two-stage (implements docs/scaling_strategy.md #6, for corpora
+   too large to enumerate as a single-call structured-output schema):
+   - **Fuzzy match first** (`agent._fuzzy_match_guitar_model`): matches the
+     query's text against the indexed `guitar_model` slugs via `rapidfuzz`, with
+     no LLM call at all. Covers most real queries, since people usually name a
+     model directly (e.g. "Stratocaster").
+   - **LLM fallback only on a miss** (`agent._shortlist_candidates` +
+     structured output): a cheap unfiltered vector pre-search shortlists a
+     handful of candidate `guitar_model` values (`_SHORTLIST_SIZE`, default 5),
+     and only *that* shortlist — plus "all" for cross-manufacturer/ambiguous
+     questions — becomes the structured-output schema's valid values. The
+     schema and routing prompt stay small regardless of total corpus size.
 3. **`retrieve`** — similarity search against the vector store, filtered to the
-   model(s) the router selected. "All" simply spans more chunks — natural given
-   there are only 3 to begin with.
+   model(s) the router selected. "All" spans every indexed chunk.
 4. **`generate`** — OpenAI synthesizes the final answer from the retrieved
    chunk(s), citing which spec sheet(s) it came from.
 5. **`reject`** — turns a recorded `error` into a graceful, user-facing answer
@@ -131,14 +125,17 @@ pipeline, and a shared `reject` fallback reachable from three points in the grap
 flowchart LR
     Q[User query] --> V{{"validate node<br/>empty / unencodable?"}}
     V -->|invalid| REJ[reject node<br/>error to answer]
-    V -->|valid| R{{"route node<br/>(OpenAI, structured output)<br/>which model(s)?"}}
-    R -->|BadRequestError| REJ
-    R -->|single model| RT[retrieve node<br/>similarity search<br/>filtered to that model]
-    R -->|multiple / unclear| RTA[retrieve node<br/>similarity search<br/>across all 3 docs]
+    V -->|valid| FM{{"route node:<br/>fuzzy match<br/>(rapidfuzz, no LLM call)"}}
+    FM -->|confident match| RT[retrieve node<br/>similarity search<br/>filtered to that model]
+    FM -->|miss| SL["route node:<br/>vector pre-search<br/>shortlist candidates"]
+    SL --> LLMR{{"route node:<br/>OpenAI, structured output<br/>scoped to shortlist"}}
+    LLMR -->|BadRequestError| REJ
+    LLMR -->|single model| RT
+    LLMR -->|multiple / unclear| RTA[retrieve node<br/>similarity search<br/>across all indexed chunks]
     RT --> G[generate node<br/>OpenAI synthesizes<br/>grounded, cited answer]
     RTA --> G
     G -->|BadRequestError| REJ
-    G --> A[Answer + source spec sheets]
+    G --> A[Answer + source citations]
     REJ --> A
 ```
 
@@ -193,13 +190,14 @@ uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # http://127.0.0.1:50
 
 ## Evaluation
 
-`evaluation.py` grades agent answers against `task/test-questions.csv`'s golden
-dataset via `grade_answer`, an LLM-as-judge call comparing an actual answer
-against a reference `expected_answer` and a per-row `evaluation_criteria` rubric.
+`evaluation.py` grades agent answers against
+`tests/fixtures/wikipedia_golden_questions.csv`'s golden dataset via
+`grade_answer`, an LLM-as-judge call comparing an actual answer against a
+reference `expected_answer` and a per-row `evaluation_criteria` rubric.
 `correctness` adapts `grade_answer` into an `mlflow.genai.evaluate()` scorer
 (`Feedback(value=passed, rationale=reasoning)`), so `tests/test_end_to_end.py`
-both enforces the Tier 1 accuracy/latency acceptance criteria and logs a real
-MLflow evaluation run in the same call — see
+both guards against accuracy/latency regressions and logs a real MLflow
+evaluation run in the same call — see
 [testing.md](testing.md#end-to-end-test--mlflow-evaluation) for why this is a
 custom scorer rather than a builtin, and what gets logged. `grade_answer` itself
 is calibrated against hand-crafted pass/fail cases in
@@ -208,7 +206,7 @@ is calibrated against hand-crafted pass/fail cases in
 
 ```mermaid
 flowchart LR
-    CSV[task/test-questions.csv<br/>golden dataset] --> GQ[GoldenQuestion.to_scorer_inputs]
+    CSV[wikipedia_golden_questions.csv<br/>golden dataset] --> GQ[GoldenQuestion.to_scorer_inputs]
     GQ --> EVAL[mlflow.genai.evaluate]
     AGENT[Compiled agent] -->|predict_fn| EVAL
     EVAL -->|correctness scorer| JUDGE[grade_answer<br/>LLM-as-judge]
@@ -221,21 +219,27 @@ flowchart LR
 ```
 src/guitar_assistant/
 ├── __init__.py       # package entrypoint / CLI (`guitar-assistant "question"`)
-├── data.py           # load the 3 markdown files, attach metadata, build Documents
-├── retriever.py       # build/open the Chroma store: ephemeral (demo corpus) or persistent
+├── retriever.py       # build an ephemeral Chroma store, or open/query the persistent one;
+                         # load_corpus opens the persistent store + derives its indexed models
 ├── agent.py           # LangGraph state, route/retrieve/generate nodes, compiled graph
 ├── mlflow_model.py    # GuitarAssistantModel (pyfunc wrapper) + a log_model() helper
 ├── evaluation.py      # golden dataset loading + grade_answer/correctness scorer
-├── wikipedia_client.py  # WikipediaClient: walk Category:Electric guitars, fetch wikitext
-├── infobox_parser.py    # parse_article: Infobox Guitar model fields + clean Markdown body
-├── chunking.py           # chunk_article: overview + per-section Documents, tagged with metadata
-├── manifest.py            # IngestionManifest: title -> last-ingested revision ID, as JSON
-└── ingestion.py            # run_ingestion + `guitar-assistant-ingest` CLI: wires the above
-                             # into the persistent vector store (see "Wikipedia ingestion
-                             # pipeline" below)
+└── ingestion/          # Wikipedia ingestion pipeline (see "Wikipedia ingestion
+                         # pipeline" below); the only outside dependency it takes
+                         # is retriever.open_persistent_vector_store
+    ├── __init__.py
+    ├── wikipedia_client.py  # WikipediaClient: walk Category:Electric guitars, fetch wikitext
+    ├── infobox_parser.py    # parse_article: Infobox Guitar model fields + clean Markdown body
+    ├── chunking.py           # chunk_article: overview + per-section Documents, tagged with metadata
+    ├── manifest.py            # IngestionManifest: title -> last-ingested revision ID, as JSON
+    └── pipeline.py             # run_ingestion + `guitar-assistant-ingest` CLI: wires the above
+                                 # into the persistent vector store
 tests/
-└── ...                # unit tests per module, plus an end-to-end test that runs
-                        # mlflow.genai.evaluate() against task/test-questions.csv,
+├── fixtures/           # wikipedia_eval_corpus.json (frozen real-article snapshot) +
+                         # wikipedia_golden_questions.csv, both read by test_end_to_end.py
+├── ingestion/         # unit + integration tests mirroring src/guitar_assistant/ingestion/
+└── ...                # unit tests per module, plus an end-to-end regression-guard test
+                        # that runs mlflow.genai.evaluate() against the fixtures above,
                         # and a judge calibration test for grade_answer
 ```
 

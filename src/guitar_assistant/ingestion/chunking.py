@@ -4,7 +4,8 @@ See the "Chunking" section of docs/scaling_strategy.md (#3): `chunk_article` tur
 one `ParsedArticle` into an overview chunk (a rendered infobox spec table plus the
 article's lead paragraph) and one chunk per `##`/`###` section of the body, all
 tagged with the same article-level metadata (`manufacturer`, `guitar_model`,
-`source_uri`) used later to filter retrieval by guitar model.
+`source`) used later to filter retrieval by guitar model and to cite the answer's
+source article.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Final
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 
-from guitar_assistant.infobox_parser import ParsedArticle
+from guitar_assistant.ingestion.infobox_parser import ParsedArticle
 
 # Infobox fields that describe the page itself (image caption, raw title) rather
 # than the guitar's specification; excluded from the rendered spec table.
@@ -33,7 +34,7 @@ def chunk_article(article: ParsedArticle) -> list[Document]:
     Returns:
         One overview `Document` (spec table + lead paragraph), followed by one
         `Document` per `##`/`###` section of the body. Every chunk carries the
-        same `manufacturer`/`guitar_model`/`source_uri` metadata.
+        same `manufacturer`/`guitar_model`/`source` metadata.
     """
     base_metadata = _base_metadata(article)
     lead_paragraph, sections_markdown = _split_lead_and_sections(article.body_markdown)
@@ -48,7 +49,7 @@ def _base_metadata(article: ParsedArticle) -> dict[str, str]:
     return {
         "manufacturer": article.infobox.get("manufacturer", "").lower(),
         "guitar_model": _slugify(article.title),
-        "source_uri": article.title,
+        "source": article.title,
     }
 
 

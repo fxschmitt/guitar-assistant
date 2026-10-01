@@ -7,10 +7,10 @@ from pathlib import Path
 from langchain_chroma import Chroma
 import pytest
 
-from guitar_assistant.ingestion import run_ingestion
-from guitar_assistant.manifest import IngestionManifest
+from guitar_assistant.ingestion.manifest import IngestionManifest
+from guitar_assistant.ingestion.pipeline import run_ingestion
+from guitar_assistant.ingestion.wikipedia_client import ArticleNotFoundError, FetchedArticle
 from guitar_assistant.retriever import open_persistent_vector_store
-from guitar_assistant.wikipedia_client import ArticleNotFoundError, FetchedArticle
 
 _STRATOCASTER_WIKITEXT = """{{Infobox Guitar model
 |manufacturer=[[Fender]]

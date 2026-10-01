@@ -4,7 +4,12 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
-from guitar_assistant.retriever import open_persistent_vector_store
+from guitar_assistant.retriever import (
+    build_vector_store,
+    list_indexed_guitar_models,
+    load_corpus,
+    open_persistent_vector_store,
+)
 
 
 def test_build_vector_store_indexes_every_document(vector_store, available_guitar_models):
@@ -36,3 +41,50 @@ def test_open_persistent_vector_store_persists_documents_across_reopens(
     reopened_store = open_persistent_vector_store(persist_directory, embeddings=fake_embeddings)
     # THEN the previously added document is still there, without re-adding it
     assert reopened_store._collection.count() == 1
+
+
+def test_list_indexed_guitar_models_returns_the_distinct_models_sorted(
+    vector_store, available_guitar_models
+):
+    # GIVEN a vector store indexing one document per guitar model, in an arbitrary order
+    # WHEN listing the guitar models actually indexed
+    indexed_guitar_models = list_indexed_guitar_models(vector_store)
+    # THEN every distinct model is returned, sorted, with no duplicates
+    assert indexed_guitar_models == sorted(set(available_guitar_models))
+
+
+def test_list_indexed_guitar_models_deduplicates_repeated_models(fake_embeddings):
+    # GIVEN a vector store with two documents sharing the same guitar_model
+    documents = [
+        Document(
+            page_content="overview",
+            metadata={"guitar_model": "stratocaster", "source": "overview.md"},
+        ),
+        Document(
+            page_content="specs section",
+            metadata={"guitar_model": "stratocaster", "source": "specs.md"},
+        ),
+    ]
+    store = build_vector_store(documents, embeddings=fake_embeddings)
+    # WHEN listing the guitar models actually indexed
+    indexed_guitar_models = list_indexed_guitar_models(store)
+    # THEN the repeated model is only returned once
+    assert indexed_guitar_models == ["stratocaster"]
+
+
+def test_load_corpus_opens_the_persistent_store_and_derives_its_indexed_models(
+    tmp_path, fake_embeddings
+):
+    # GIVEN a persistent store pre-populated with a Wikipedia-ingested document
+    persist_directory = tmp_path / ".chroma"
+    seed_store = open_persistent_vector_store(persist_directory, embeddings=fake_embeddings)
+    seed_store.add_documents(
+        [Document(page_content="stratocaster overview", metadata={"guitar_model": "stratocaster"})]
+    )
+    # WHEN loading the corpus
+    vector_store, available_guitar_models = load_corpus(
+        embeddings=fake_embeddings, persist_directory=persist_directory
+    )
+    # THEN it reopens the persistent store and derives the models from what's indexed
+    assert available_guitar_models == ["stratocaster"]
+    assert vector_store._collection.count() == 1

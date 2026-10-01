@@ -1,4 +1,5 @@
-"""Grade agent answers against the golden dataset (`task/test-questions.csv`).
+"""Grade agent answers against a golden dataset CSV (e.g.
+`tests/fixtures/wikipedia_golden_questions.csv`).
 
 Correctness here is judged relative to a known-good `expected_answer`, not
 freshly re-derived from the source spec sheets — the golden dataset already
@@ -59,11 +60,11 @@ class JudgeVerdict(BaseModel):
 
 @dataclass(frozen=True)
 class GoldenQuestion:
-    """One row of the golden dataset (`task/test-questions.csv`).
+    """One row of a golden dataset CSV (e.g. `tests/fixtures/wikipedia_golden_questions.csv`).
 
     Args:
         question_id: The dataset's question identifier.
-        category: The query category (e.g. "Comparative - Cross Manufacturer").
+        category: The query category (e.g. "Direct Spec - Gibson Flying V").
         question: The question text to send to the agent.
         expected_answer: The known-correct reference answer.
         evaluation_criteria: What the answer needs to demonstrate to be graded correct.

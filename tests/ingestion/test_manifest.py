@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from guitar_assistant.manifest import IngestionManifest
+from guitar_assistant.ingestion.manifest import IngestionManifest
 
 
 def test_is_up_to_date_is_false_for_a_title_never_ingested():

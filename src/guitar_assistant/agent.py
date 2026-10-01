@@ -7,6 +7,14 @@ documents for cross-manufacturer/ambiguous queries), and `generate` synthesizes 
 grounded, cited answer from the retrieved chunk(s). `route` and `generate`
 divert to `reject` on a non-retryable API error; transient errors are retried
 transparently before reaching either node.
+
+Routing is two-stage (docs/scaling_strategy.md #6): `_fuzzy_match_guitar_model`
+tries a fuzzy/alias match against the known `guitar_model` slugs first, with no
+LLM call at all — the common case, since most queries name a model directly. On
+a miss, `_shortlist_candidates` runs a cheap unfiltered vector pre-search to
+shortlist a handful of candidate models, and only that shortlist (not the full
+corpus) is classified by an LLM call. This keeps the router's prompt and
+structured-output schema small regardless of total corpus size.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from openai import APIConnectionError, APITimeoutError, BadRequestError, RateLimitError
 from pydantic import BaseModel, create_model
+from rapidfuzz import fuzz, process
 
 CHAT_MODEL: Final = "gpt-4o-mini"
 _ALL_GUITAR_MODELS_SENTINEL: Final = "all"
@@ -32,6 +41,9 @@ _RETRYABLE_ERRORS: Final = (RateLimitError, APIConnectionError, APITimeoutError)
 _RETRY_ATTEMPTS: Final = 3
 _EMPTY_QUERY_ERROR: Final = "The question was empty."
 _UNENCODABLE_QUERY_ERROR: Final = "The question contained characters that could not be processed."
+_FUZZY_MATCH_SCORE_CUTOFF: Final = 90
+_SHORTLIST_SEARCH_COUNT: Final = 10
+_SHORTLIST_SIZE: Final = 5
 
 _ROUTE_PROMPT: Final = ChatPromptTemplate.from_template(
     "You are routing a question about guitar spec sheets to the correct spec sheet(s).\n"
@@ -144,6 +156,70 @@ def _build_route_decision_schema(available_guitar_models: Sequence[str]) -> type
     )
 
 
+def _fuzzy_match_guitar_model(query: str, available_guitar_models: Sequence[str]) -> str | None:
+    """Fuzzy-match `query`'s text against the known `guitar_model` slugs.
+
+    No LLM call: this is the first, cheap routing stage, expected to cover most
+    real queries since people usually name a model directly (e.g. "Stratocaster",
+    matching the `fender_stratocaster` slug).
+
+    Args:
+        query: The user's raw question.
+        available_guitar_models: The guitar model slugs present in the indexed
+            corpus. Slugs are matched with underscores treated as spaces (e.g.
+            `fender_stratocaster` matches "Fender Stratocaster").
+
+    Returns:
+        The confidently matched guitar model slug, or `None` if no slug scores
+        at or above `_FUZZY_MATCH_SCORE_CUTOFF` against the query text.
+    """
+    slug_by_normalized_name = {model.replace("_", " "): model for model in available_guitar_models}
+    match = process.extractOne(
+        query.lower(),
+        slug_by_normalized_name.keys(),
+        scorer=fuzz.partial_ratio,
+        score_cutoff=_FUZZY_MATCH_SCORE_CUTOFF,
+    )
+    return slug_by_normalized_name[match[0]] if match else None
+
+
+def _shortlist_candidates(
+    query: str,
+    vector_store: VectorStore,
+    *,
+    search_count: int = _SHORTLIST_SEARCH_COUNT,
+    shortlist_size: int = _SHORTLIST_SIZE,
+) -> list[str]:
+    """Shortlist candidate `guitar_model` values for `query` via a cheap vector pre-search.
+
+    The second routing stage, run only on a fuzzy-match miss: an unfiltered
+    similarity search over the whole corpus, keeping just the distinct
+    `guitar_model` values seen among the nearest chunks. The LLM classification
+    that follows is scoped to this shortlist (plus the "all" sentinel) instead of
+    the full corpus, so its prompt and structured-output schema stay small
+    regardless of total corpus size.
+
+    Args:
+        query: The user's raw question.
+        vector_store: The indexed corpus to search, unfiltered.
+        search_count: How many nearest chunks to inspect for candidate models.
+        shortlist_size: Maximum number of distinct `guitar_model` values to
+            shortlist.
+
+    Returns:
+        Up to `shortlist_size` distinct `guitar_model` values, ordered by the
+        similarity rank of each value's nearest chunk.
+    """
+    candidates: list[str] = []
+    for document in vector_store.similarity_search(query, k=search_count):
+        guitar_model = document.metadata["guitar_model"]
+        if guitar_model not in candidates:
+            candidates.append(guitar_model)
+        if len(candidates) == shortlist_size:
+            break
+    return candidates
+
+
 def _check_query(query: str) -> str | None:
     """Check a raw query for problems that would break routing/generation.
 
@@ -190,23 +266,36 @@ def reject(state: ErrorCheck) -> dict:
     return {"answer": f"I couldn't answer that question: {state.get('error')}"}
 
 
-def route(state: Query, classify: Callable[[str], BaseModel]) -> dict:
+def route(
+    state: Query,
+    fuzzy_match: Callable[[str], str | None],
+    shortlist_then_classify: Callable[[str], str],
+) -> dict:
     """Classify which guitar model(s) the query concerns.
+
+    Tries `fuzzy_match` first; on a miss (`None`), falls through to
+    `shortlist_then_classify`, the LLM-backed fallback.
 
     Args:
         state: Current graph state; only `query` is read.
-        classify: A callable (bound to a specific structured-output schema)
-            that classifies a query into a `guitar_model` decision.
+        fuzzy_match: Matches the query's text against known `guitar_model`
+            slugs, with no LLM call. Returns the matched slug, or `None` on a
+            miss.
+        shortlist_then_classify: Vector-presearch shortlist plus LLM
+            classification scoped to it; invoked only on a `fuzzy_match` miss.
 
     Returns:
-        A partial state update setting `guitar_model`, or setting `error` if the
-        classification call fails with a non-retryable error.
+        A partial state update setting `guitar_model`, or setting `error` if
+        `shortlist_then_classify` fails with a non-retryable error.
     """
+    matched_guitar_model = fuzzy_match(state["query"])
+    if matched_guitar_model is not None:
+        return {"guitar_model": matched_guitar_model}
     try:
-        decision = classify(state["query"])
+        guitar_model = shortlist_then_classify(state["query"])
     except BadRequestError as error:
         return {"error": str(error)}
-    return {"guitar_model": cast(_RouteDecision, decision).guitar_model}
+    return {"guitar_model": guitar_model}
 
 
 def retrieve(state: RoutedQuery, vector_store: VectorStore) -> dict:
@@ -291,25 +380,26 @@ def build_agent(
         "stop_after_attempt": _RETRY_ATTEMPTS,
     }
 
-    route_decision_schema = _build_route_decision_schema(available_guitar_models)
-    classify_chain = (
-        _ROUTE_PROMPT | chat_model.with_structured_output(route_decision_schema)
-    ).with_retry(**retry_kwargs)
+    def fuzzy_match(query: str) -> str | None:
+        return _fuzzy_match_guitar_model(query, available_guitar_models)
 
-    def classify(query: str) -> BaseModel:
-        return cast(
-            BaseModel,
-            classify_chain.invoke(
-                {
-                    "query": query,
-                    "available_guitar_models": ", ".join(available_guitar_models),
-                    "all_guitar_models_sentinel": _ALL_GUITAR_MODELS_SENTINEL,
-                }
-            ),
+    def shortlist_then_classify(query: str) -> str:
+        shortlist = _shortlist_candidates(query, vector_store)
+        route_decision_schema = _build_route_decision_schema(shortlist)
+        classify_chain = (
+            _ROUTE_PROMPT | chat_model.with_structured_output(route_decision_schema)
+        ).with_retry(**retry_kwargs)
+        decision = classify_chain.invoke(
+            {
+                "query": query,
+                "available_guitar_models": ", ".join(shortlist),
+                "all_guitar_models_sentinel": _ALL_GUITAR_MODELS_SENTINEL,
+            }
         )
+        return cast(_RouteDecision, decision).guitar_model
 
     def route_node(state: AgentState) -> dict:
-        return route(state, classify)
+        return route(state, fuzzy_match, shortlist_then_classify)
 
     generate_chain = (_GENERATE_PROMPT | chat_model).with_retry(**retry_kwargs)
 

@@ -2,7 +2,7 @@
 
 Hits the network, so it's marked `integration` and excluded from the default
 `uv run pytest` run. Run explicitly with
-`uv run pytest -m integration tests/test_infobox_parser_integration.py`.
+`uv run pytest -m integration tests/ingestion/test_infobox_parser_integration.py`.
 
 Uses a small `max_requests` budget throughout, so a run of this test can never
 walk more than a handful of pages into the real `Category:Electric guitars`
@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from guitar_assistant.infobox_parser import parse_article
-from guitar_assistant.wikipedia_client import (
+from guitar_assistant.ingestion.infobox_parser import parse_article
+from guitar_assistant.ingestion.wikipedia_client import (
     ArticleNotFoundError,
     ELECTRIC_GUITARS_BY_MANUFACTURER_CATEGORY,
     WikipediaClient,

@@ -38,6 +38,30 @@ uv add --dev <package>    # dev-only dependency
 
 This updates `pyproject.toml` + `uv.lock` in one step — commit both.
 
+## Running ingestion
+
+The corpus (see "Running the CLI" below) is populated by a separate console
+script, `guitar-assistant-ingest` (see
+[architecture.md](architecture.md#wikipedia-ingestion-pipeline)), which walks
+Wikipedia's electric-guitar category tree and writes chunked, embedded articles
+into the persistent `.chroma/` store:
+
+```bash
+uv run guitar-assistant-ingest
+```
+
+Needs `OPENAI_API_KEY` (embeds the fetched articles) and `WIKIPEDIA_CONTACT_EMAIL`
+(Wikipedia's API etiquette requires an identifying contact in every request's
+`User-Agent`), both set the same way as `OPENAI_API_KEY` above:
+
+```bash
+echo "WIKIPEDIA_CONTACT_EMAIL=you@example.com" >> .env
+```
+
+Safe to re-run: a second run only re-processes articles whose Wikipedia revision
+changed since the last run (tracked in `ingestion_manifest.json`, gitignored like
+`.chroma/`), so a manual re-run or a periodic cron job both stay cheap.
+
 ## Running the CLI
 
 The package installs a console script, `guitar-assistant`, that takes a question
@@ -60,10 +84,15 @@ or exported directly:
 export OPENAI_API_KEY=sk-...
 ```
 
-Each invocation loads the bundled Telecaster/Stratocaster/SG spec sheets, builds a
-fresh in-memory vector store, and runs the agent graph (see
+Each invocation queries the persistent store populated by
+`guitar-assistant-ingest` (see
+[architecture.md](architecture.md#wikipedia-ingestion-pipeline)) and runs the
+agent graph (see
 [architecture.md](architecture.md#agent-graph-langgraph-per-query)) against your
-question.
+question. This requires having run `guitar-assistant-ingest` at least once; the
+available guitar models are derived from whatever is indexed in `.chroma/` at
+query time. Running the CLI before any ingestion means querying an empty
+corpus — no answers, just "all"-routed empty retrievals.
 
 ## Packaging
 
@@ -106,3 +135,7 @@ answer.
 uv sync --group explore
 uv run streamlit run app.py
 ```
+
+Same corpus as the CLI: queries the persistent Wikipedia store, and shows an
+empty-state message instead of chatting if `guitar-assistant-ingest` hasn't
+been run yet.

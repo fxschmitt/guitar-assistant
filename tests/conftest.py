@@ -8,11 +8,49 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
+from pydantic import PrivateAttr
 import pytest
+from chromadb.api.shared_system_client import SharedSystemClient
 
 from guitar_assistant.retriever import build_vector_store
 
 AVAILABLE_GUITAR_MODELS: Final = ("telecaster", "stratocaster", "sg")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_repo_local_state(monkeypatch, tmp_path):
+    """Run every test from an empty temp directory, isolated from this repo's local state.
+
+    `retriever.DEFAULT_PERSIST_DIRECTORY` (`.chroma/`) and
+    `manifest.DEFAULT_MANIFEST_PATH` (`ingestion_manifest.json`) are both relative
+    paths, resolved against the process's current working directory. A test that
+    calls `retriever.load_corpus()`/`GuitarAssistantModel.load_context` with no
+    explicit `persist_directory` override (most unit tests pass one explicitly, but
+    nothing enforces that) would otherwise silently read or write whatever a real
+    `guitar-assistant-ingest` run has left in this repo's actual `.chroma/` —
+    non-deterministic depending on local disk state, and not network-free. Every
+    unit test's fakes are network-free regardless, so this only guards the
+    filesystem side.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _clear_chromadb_system_cache():
+    """Clear chromadb's cross-process `System` cache after every test.
+
+    `Chroma(persist_directory=...)` keyed by settings is cached process-wide by
+    `SharedSystemClient`. Many tests each open a persistent store in its own
+    throwaway `tmp_path` (seeding/reopening/ingestion tests, plus
+    `GuitarAssistantModel.load_context`'s own open) without ever clearing it, and
+    the resulting pile-up of cached `System` objects pointing at directories pytest
+    has since removed is what caused the intermittent
+    `chromadb.errors.InvalidArgumentError`/`InternalError` ("Failed to pull logs
+    from the log store") seen when running the full suite. Clearing the cache
+    after each test keeps every persistent-store test starting from a clean slate.
+    """
+    yield
+    SharedSystemClient.clear_system_cache()
 
 
 class FakeChatModel(BaseChatModel):
@@ -24,6 +62,9 @@ class FakeChatModel(BaseChatModel):
 
     guitar_model: str
     answer: str
+    # Records each schema passed to with_structured_output, so routing tests can assert
+    # whether the (fake) LLM was invoked at all, and which shortlist it was scoped to.
+    _structured_output_calls: list[type] = PrivateAttr(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
@@ -42,6 +83,7 @@ class FakeChatModel(BaseChatModel):
         self, schema: dict[str, Any] | type, *, include_raw: bool = False, **kwargs: Any
     ) -> Runnable:
         assert isinstance(schema, type)
+        self._structured_output_calls.append(schema)
         return RunnableLambda(lambda _input: schema(guitar_model=self.guitar_model))
 
 
