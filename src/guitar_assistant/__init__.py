@@ -23,7 +23,7 @@ _logger = logging.getLogger(__name__)
 @click.command()
 @click.argument("query", type=str)
 def main(query: str) -> None:
-    """Answer questions about Fender/Gibson electric guitar specifications."""
+    """Answer a question about an electric guitar model."""
     logging.basicConfig(level=logging.INFO)
     configure_default_tracking_uri()
     mlflow_langchain.autolog()

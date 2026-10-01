@@ -2,20 +2,20 @@
 
 See the README's "Indexing pipeline" section: documents are embedded with
 OpenAI's `text-embedding-3-small`. `build_vector_store` holds them in an
-ephemeral (in-memory) Chroma collection rebuilt on every process start — the
-right amount of ceremony for the 3-document hand-written demo corpus.
-`open_persistent_vector_store` is the Wikipedia-ingestion counterpart from
-docs/scaling_strategy.md (#2): a Chroma collection persisted to a local
-directory, so embeddings written by a prior `guitar-assistant-ingest` run
-survive across process restarts instead of being re-embedded every time.
-`load_corpus` picks between the two, controlled by the `GUITAR_ASSISTANT_CORPUS`
-environment variable, so the CLI/MLflow model entrypoints don't each duplicate
-that choice.
+ephemeral (in-memory) Chroma collection, rebuilt fresh every time it's called —
+used by the Wikipedia-ingestion-fixture end-to-end test
+(`tests/test_end_to_end.py`), which needs a real but reproducible store without
+touching the persistent one. `open_persistent_vector_store` is the real
+runtime counterpart from docs/scaling_strategy.md (#2): a Chroma collection
+persisted to a local directory, so embeddings written by a prior
+`guitar-assistant-ingest` run survive across process restarts instead of being
+re-embedded every time. `load_corpus` opens it and derives the available
+guitar models in one call, so the CLI/MLflow model/Streamlit entrypoints don't
+each duplicate that.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -27,15 +27,9 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
-from guitar_assistant.data import load_documents
-
 EMBEDDING_MODEL: Final = "text-embedding-3-small"
 DEFAULT_PERSIST_DIRECTORY: Final = Path(".chroma")
 _WIKIPEDIA_COLLECTION_NAME: Final = "guitar_models"
-
-CORPUS_ENV_VAR: Final = "GUITAR_ASSISTANT_CORPUS"
-DEMO_CORPUS: Final = "demo"
-WIKIPEDIA_CORPUS: Final = "wikipedia"
 
 load_dotenv()
 
@@ -43,7 +37,7 @@ load_dotenv()
 def build_vector_store(
     documents: Sequence[Document], embeddings: Embeddings | None = None
 ) -> Chroma:
-    """Embed documents and load them into an in-memory Chroma vector store.
+    """Embed documents and load them into a fresh, ephemeral in-memory Chroma vector store.
 
     Args:
         documents: Documents to embed and index.
@@ -117,44 +111,23 @@ def load_corpus(
     embeddings: Embeddings | None = None,
     persist_directory: Path = DEFAULT_PERSIST_DIRECTORY,
 ) -> tuple[Chroma, list[str]]:
-    """Build or open the vector store selected by the `GUITAR_ASSISTANT_CORPUS` env var.
+    """Open the persistent Wikipedia-ingested corpus and derive its available guitar models.
 
-    Reads `GUITAR_ASSISTANT_CORPUS` (`"demo"` or `"wikipedia"`), defaulting to
-    `"wikipedia"`: the persistent, Wikipedia-ingested corpus is the real runtime
-    corpus and the intended default once a `guitar-assistant-ingest` run has
-    populated it. `"demo"` is an explicit opt-in that rebuilds an ephemeral store
-    from the 3 bundled spec sheets instead — the quick-start/test fixture corpus,
-    not the default runtime path. `"wikipedia"` opens the persistent store and
-    derives the available models from what's actually indexed there, since there
-    is no in-memory `documents` list to read them from at query time.
+    Opens the persistent store and derives the available models from what's
+    actually indexed there, since there is no in-memory `documents` list to
+    read them from at query time.
 
     Args:
         embeddings: Embeddings model to use. Defaults to OpenAI's
             `text-embedding-3-small`. Overridable for testing without network
             access.
-        persist_directory: Forwarded to `open_persistent_vector_store` when the
-            `"wikipedia"` corpus is selected; ignored for `"demo"`. Overridable
-            for testing, so tests don't touch the real `.chroma/` directory.
+        persist_directory: Forwarded to `open_persistent_vector_store`.
+            Overridable for testing, so tests don't touch the real `.chroma/`
+            directory.
 
     Returns:
         A `(vector_store, available_guitar_models)` pair, ready to pass to
         `agent.build_agent`.
-
-    Raises:
-        ValueError: `GUITAR_ASSISTANT_CORPUS` is set to neither `"demo"` nor
-            `"wikipedia"`.
     """
-    corpus = os.environ.get(CORPUS_ENV_VAR, WIKIPEDIA_CORPUS)
-    if corpus == WIKIPEDIA_CORPUS:
-        vector_store = open_persistent_vector_store(persist_directory, embeddings=embeddings)
-        return vector_store, list_indexed_guitar_models(vector_store)
-    if corpus == DEMO_CORPUS:
-        documents = load_documents()
-        available_guitar_models = sorted(
-            {document.metadata["guitar_model"] for document in documents}
-        )
-        return build_vector_store(documents, embeddings=embeddings), available_guitar_models
-    raise ValueError(
-        f"{CORPUS_ENV_VAR}={corpus!r} is not supported; use {DEMO_CORPUS!r} or "
-        f"{WIKIPEDIA_CORPUS!r}."
-    )
+    vector_store = open_persistent_vector_store(persist_directory, embeddings=embeddings)
+    return vector_store, list_indexed_guitar_models(vector_store)

@@ -32,21 +32,14 @@ from guitar_assistant.agent import build_agent
 from guitar_assistant.ingestion.manifest import IngestionManifest
 from guitar_assistant.ingestion.pipeline import run_ingestion
 from guitar_assistant.ingestion.wikipedia_client import WikipediaClient
-from guitar_assistant.retriever import (
-    CORPUS_ENV_VAR,
-    WIKIPEDIA_CORPUS,
-    load_corpus,
-    open_persistent_vector_store,
-)
+from guitar_assistant.retriever import load_corpus, open_persistent_vector_store
 
 _STRATOCASTER_MODELS_CATEGORY = "Category:Fender Stratocasters"
 _STRATOCASTER_GUITAR_MODEL = "fender_stratocaster"
 
 
 @pytest.mark.integration
-def test_agent_answers_from_the_real_persistent_wikipedia_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_agent_answers_from_the_real_persistent_wikipedia_store(tmp_path: Path):
     # GIVEN a persistent store populated by a real ingestion run over a small, known
     # category, exactly as `guitar-assistant-ingest` would leave it
     persist_directory = tmp_path / ".chroma"
@@ -63,7 +56,6 @@ def test_agent_answers_from_the_real_persistent_wikipedia_store(
 
     # WHEN a separate, later call reopens that same store the way a real query-time
     # process does: via retriever.load_corpus, not the ingestion run's own handle
-    monkeypatch.setenv(CORPUS_ENV_VAR, WIKIPEDIA_CORPUS)
     vector_store, available_guitar_models = load_corpus(persist_directory=persist_directory)
     assert _STRATOCASTER_GUITAR_MODEL in available_guitar_models
 

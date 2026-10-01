@@ -1,15 +1,17 @@
 # guitar-assistant
 
-A multi-tool AI agent that answers questions about Fender/Gibson electric guitar
-specifications. Built with LangChain/LangGraph as a routed retrieve-and-generate
-pipeline over a small spec-sheet corpus, packaged as an installable Python package and
-tracked with MLflow.
+A multi-tool AI agent that answers questions about electric guitar models,
+retrieving from a corpus ingested from every electric guitar model's Wikipedia
+article. Built with LangChain/LangGraph as a routed retrieve-and-generate
+pipeline, packaged as an installable Python package and tracked with MLflow.
 
 ## Quickstart
 
 ```bash
 uv sync
 echo "OPENAI_API_KEY=sk-..." > .env
+echo "WIKIPEDIA_CONTACT_EMAIL=you@example.com" >> .env
+uv run guitar-assistant-ingest   # populates the persistent corpus; run once
 uv run guitar-assistant "What is the scale length of the Stratocaster?"
 ```
 
@@ -29,9 +31,10 @@ and dependency management with `uv`.
 
 ## Corpus
 
-The three guitar spec sheets in `src/guitar_assistant/resources/` are condensed,
-hand-written summaries covering each model's well-known, publicly documented
-specifications (body/neck wood, pickups, scale length, bridge type, etc.) — not
-scraped or paraphrased from any single source. This is a demonstration corpus for a
-generic RAG/agent architecture; it is not affiliated with, endorsed by, or sourced
-from Fender Musical Instruments Corporation or Gibson Brands, Inc.
+`guitar-assistant` queries a persistent corpus built by `guitar-assistant-ingest`
+from every Wikipedia article with an `Infobox Guitar model` template
+(manufacturer, specs, body/neck wood, pickups, etc.), chunked by section and
+re-embedded only when an article's revision changes — see
+[docs/architecture.md](docs/architecture.md#wikipedia-ingestion-pipeline).
+Content comes directly from Wikipedia; this project is not affiliated with,
+endorsed by, or sourced from any guitar manufacturer.

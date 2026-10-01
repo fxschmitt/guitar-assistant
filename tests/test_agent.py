@@ -64,7 +64,7 @@ def test_build_route_decision_schema_rejects_unknown_model():
     ],
 )
 def test_fuzzy_match_guitar_model(query: str, expected_match: str | None):
-    # GIVEN the demo corpus's available guitar models
+    # GIVEN a fixed set of available guitar models
     # WHEN fuzzy-matching a query that confidently names one, or doesn't
     # THEN the matched slug (or None, on a miss) is returned
     assert _fuzzy_match_guitar_model(query, _AVAILABLE_GUITAR_MODELS) == expected_match

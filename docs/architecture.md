@@ -5,42 +5,17 @@ and [VSCode's Mermaid preview extension](https://marketplace.visualstudio.com/it
 
 ## Design philosophy
 
-The source corpus is three small Markdown files (`Fender_Telecaster.md`,
-`Fender_Stratocaster.md`, `Gibson_SG.md`), each well under a page. Most
-RAG advice (fine-grained chunking, re-ranking, hybrid search, large vector-store
-infra) targets corpora with thousands of documents; applying that machinery here
-would add complexity without adding correctness. The design below is deliberately
-minimal for this corpus size — every corner cut is named explicitly in
-[limitations.md](limitations.md), so it's simple on purpose, not simple by
-omission.
-
 **Model choice:** OpenAI for both routing/generation and embeddings — one
 provider, one API key, minimal setup friction.
 
-## Indexing pipeline (offline, run once at startup)
-
-Chunking strategy: **one chunk per source document** (3 chunks total), not
-sub-chunked by section. Each file already fits comfortably in an LLM context
-window, and several answers (e.g. exact scale length, pickup configuration) live
-inside Markdown tables — splitting by section risks cutting a table in half.
-Whole-document chunking guarantees every table stays intact. Each chunk carries
-metadata (`manufacturer`, `guitar_model`) used for filtering in the routing step
-below.
-
-```mermaid
-flowchart LR
-    D1[Fender_Telecaster.md] --> L[Loader<br/>attach manufacturer/guitar_model metadata]
-    D2[Fender_Stratocaster.md] --> L
-    D3[Gibson_SG.md] --> L
-    L --> E[OpenAI embeddings API<br/>text-embedding-3-small]
-    E --> V[(Chroma<br/>in-memory vector store)]
-```
+The persistent Wikipedia corpus (below) is the only runtime path; every corner
+cut at that corpus size is named explicitly in [limitations.md](limitations.md),
+so what's simple remains simple on purpose, not simple by omission.
 
 ## Wikipedia ingestion pipeline
 
-Implements docs/scaling_strategy.md #1–#3: growing the corpus beyond the 3
-hand-written files above by ingesting every electric guitar model with a
-Wikipedia article, into a separate, persistent Chroma collection.
+Implements docs/scaling_strategy.md #1–#3: ingesting every electric guitar
+model with a Wikipedia article into a persistent Chroma collection.
 
 - **Discovery + fetch** ([wikipedia_client.py](../src/guitar_assistant/ingestion/wikipedia_client.py)):
   `WikipediaClient.walk_category` enumerates candidate titles by walking a
@@ -89,28 +64,22 @@ flowchart LR
     STORE --> MARK["manifest.mark_ingested"]
 ```
 
-Cross-manufacturer/section-variant LLM extraction, cost containment beyond a
-single `.env` key, and the two-stage fuzzy/LLM router (§5–§6 of
-scaling_strategy.md) remain future work.
+Cross-manufacturer/section-variant LLM extraction and cost containment beyond
+a single `.env` key (§5 of scaling_strategy.md) remain future work.
 
-**Corpus selection at query time:** `retriever.load_corpus` picks between this
-persistent store and the 3-file demo corpus, controlled by the
-`GUITAR_ASSISTANT_CORPUS` environment variable (`"wikipedia"`, the default, or
-`"demo"`) — see [usage.md](usage.md#running-the-cli). Both `main()` and
-`GuitarAssistantModel.load_context` call it instead of reading `data.py` and
-building an in-memory store directly. The persistent Wikipedia corpus is the
-default runtime path; `data.py`/`build_vector_store`/the 3 spec sheets remain
-available as an explicit demo/test fixture (`GUITAR_ASSISTANT_CORPUS=demo`),
-used by the unit test suite and `usage.md`'s quick-start, not by a default
-`guitar-assistant` invocation. For the `"wikipedia"` corpus, the available
-guitar models are read back from what's actually indexed in `.chroma/`
-(`retriever.list_indexed_guitar_models`) rather than from `IngestionManifest`,
-since the manifest is an ingestion-time bookkeeping detail and by query time
-there is no in-memory `documents` list to derive them from otherwise. A
-default invocation before any `guitar-assistant-ingest` run has populated
-`.chroma/` sees an empty corpus (`available_guitar_models == []`), so the
-router's schema only ever offers the "all" sentinel and retrieval returns
-nothing — run ingestion at least once before relying on the default.
+**Corpus selection at query time:** `retriever.load_corpus` opens the
+persistent store and derives `available_guitar_models` from what's actually
+indexed there (`retriever.list_indexed_guitar_models`) rather than from
+`IngestionManifest`, since the manifest is an ingestion-time bookkeeping detail
+and by query time there is no in-memory `documents` list to derive them from
+otherwise. `main()`, `GuitarAssistantModel.load_context`, and the Streamlit
+exploration UI (`app.py`, see [usage.md](usage.md#exploration-ui)) all call it
+instead of building a vector store directly. A default invocation before any
+`guitar-assistant-ingest` run has populated `.chroma/` sees an empty corpus
+(`available_guitar_models == []`): the CLI/packaged model route every query to
+the "all" sentinel against empty retrieval, while `app.py` detects this and
+shows an empty-state message instead of running the agent at all — run
+ingestion at least once before relying on the default.
 
 ## Agent graph (LangGraph, per query)
 
@@ -221,13 +190,14 @@ uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # http://127.0.0.1:50
 
 ## Evaluation
 
-`evaluation.py` grades agent answers against `task/test-questions.csv`'s golden
-dataset via `grade_answer`, an LLM-as-judge call comparing an actual answer
-against a reference `expected_answer` and a per-row `evaluation_criteria` rubric.
+`evaluation.py` grades agent answers against
+`tests/fixtures/wikipedia_golden_questions.csv`'s golden dataset via
+`grade_answer`, an LLM-as-judge call comparing an actual answer against a
+reference `expected_answer` and a per-row `evaluation_criteria` rubric.
 `correctness` adapts `grade_answer` into an `mlflow.genai.evaluate()` scorer
 (`Feedback(value=passed, rationale=reasoning)`), so `tests/test_end_to_end.py`
-both enforces the Tier 1 accuracy/latency acceptance criteria and logs a real
-MLflow evaluation run in the same call — see
+both guards against accuracy/latency regressions and logs a real MLflow
+evaluation run in the same call — see
 [testing.md](testing.md#end-to-end-test--mlflow-evaluation) for why this is a
 custom scorer rather than a builtin, and what gets logged. `grade_answer` itself
 is calibrated against hand-crafted pass/fail cases in
@@ -236,7 +206,7 @@ is calibrated against hand-crafted pass/fail cases in
 
 ```mermaid
 flowchart LR
-    CSV[task/test-questions.csv<br/>golden dataset] --> GQ[GoldenQuestion.to_scorer_inputs]
+    CSV[wikipedia_golden_questions.csv<br/>golden dataset] --> GQ[GoldenQuestion.to_scorer_inputs]
     GQ --> EVAL[mlflow.genai.evaluate]
     AGENT[Compiled agent] -->|predict_fn| EVAL
     EVAL -->|correctness scorer| JUDGE[grade_answer<br/>LLM-as-judge]
@@ -249,9 +219,8 @@ flowchart LR
 ```
 src/guitar_assistant/
 ├── __init__.py       # package entrypoint / CLI (`guitar-assistant "question"`)
-├── data.py           # load the 3 markdown files, attach metadata, build Documents
-├── retriever.py       # build/open the Chroma store: ephemeral (demo corpus) or persistent;
-                         # load_corpus picks between them (GUITAR_ASSISTANT_CORPUS)
+├── retriever.py       # build an ephemeral Chroma store, or open/query the persistent one;
+                         # load_corpus opens the persistent store + derives its indexed models
 ├── agent.py           # LangGraph state, route/retrieve/generate nodes, compiled graph
 ├── mlflow_model.py    # GuitarAssistantModel (pyfunc wrapper) + a log_model() helper
 ├── evaluation.py      # golden dataset loading + grade_answer/correctness scorer
@@ -266,9 +235,11 @@ src/guitar_assistant/
     └── pipeline.py             # run_ingestion + `guitar-assistant-ingest` CLI: wires the above
                                  # into the persistent vector store
 tests/
+├── fixtures/           # wikipedia_eval_corpus.json (frozen real-article snapshot) +
+                         # wikipedia_golden_questions.csv, both read by test_end_to_end.py
 ├── ingestion/         # unit + integration tests mirroring src/guitar_assistant/ingestion/
-└── ...                # unit tests per module, plus an end-to-end test that runs
-                        # mlflow.genai.evaluate() against task/test-questions.csv,
+└── ...                # unit tests per module, plus an end-to-end regression-guard test
+                        # that runs mlflow.genai.evaluate() against the fixtures above,
                         # and a judge calibration test for grade_answer
 ```
 

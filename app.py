@@ -19,14 +19,19 @@ from langgraph.graph.state import CompiledStateGraph
 from mlflow import langchain as mlflow_langchain
 
 from guitar_assistant.agent import build_agent
-from guitar_assistant.data import load_documents
 from guitar_assistant.mlflow_model import configure_default_tracking_uri
-from guitar_assistant.retriever import build_vector_store
+from guitar_assistant.retriever import load_corpus
 
 
 @st.cache_resource
 def _load_agent() -> tuple[CompiledStateGraph, list[str]]:
     """Build the vector store and compile the agent once per Streamlit server session.
+
+    Uses the same persistent Wikipedia-ingested corpus as the CLI/MLflow
+    entrypoints (`retriever.load_corpus`). `available_guitar_models` comes back
+    empty if the corpus hasn't been ingested yet; `main` surfaces that as an
+    empty-state message rather than building a useless agent with no
+    retrievable models.
 
     Returns:
         [The compiled agent graph, the sorted list of guitar models available in the corpus].
@@ -35,9 +40,7 @@ def _load_agent() -> tuple[CompiledStateGraph, list[str]]:
     configure_default_tracking_uri()
     mlflow_langchain.autolog()
 
-    documents = load_documents()
-    available_guitar_models = sorted({document.metadata["guitar_model"] for document in documents})
-    vector_store = build_vector_store(documents)
+    vector_store, available_guitar_models = load_corpus()
     agent = build_agent(vector_store, available_guitar_models)
     return agent, available_guitar_models
 
@@ -75,6 +78,13 @@ def main() -> None:
     st.title("Guitar Assistant Explorer")
 
     agent, available_guitar_models = _load_agent()
+    if not available_guitar_models:
+        st.warning(
+            "The corpus has no indexed guitar models yet. Run `uv run guitar-assistant-ingest` "
+            "to populate the persistent Wikipedia store, then restart this app."
+        )
+        st.stop()
+
     st.sidebar.subheader("Available guitar models")
     st.sidebar.write(", ".join(available_guitar_models))
 
@@ -84,7 +94,7 @@ def main() -> None:
     for query, result in st.session_state.history:
         _render_turn(query, result)
 
-    query = st.chat_input("Ask a question about the Telecaster, Stratocaster, or SG...")
+    query = st.chat_input(f"Ask a question about {available_guitar_models[0]} or another model...")
     if query:
         result = agent.invoke({"query": query})
         st.session_state.history.append((query, result))

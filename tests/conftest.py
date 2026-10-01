@@ -10,23 +10,47 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import PrivateAttr
 import pytest
+from chromadb.api.shared_system_client import SharedSystemClient
 
-from guitar_assistant.retriever import CORPUS_ENV_VAR, DEMO_CORPUS, build_vector_store
+from guitar_assistant.retriever import build_vector_store
 
 AVAILABLE_GUITAR_MODELS: Final = ("telecaster", "stratocaster", "sg")
 
 
 @pytest.fixture(autouse=True)
-def _default_to_demo_corpus(monkeypatch):
-    """Default every test to the demo corpus, network-free and independent of `.chroma/`.
+def _isolate_from_repo_local_state(monkeypatch, tmp_path):
+    """Run every test from an empty temp directory, isolated from this repo's local state.
 
-    Production defaults to the persistent Wikipedia corpus (see
-    `retriever.load_corpus`), but tests should stay network-free and isolated from
-    whatever a real `guitar-assistant-ingest` run may have written locally. Tests
-    that specifically target the `"wikipedia"` selection override this within the
-    test via their own `monkeypatch.setenv`/`delenv` call.
+    `retriever.DEFAULT_PERSIST_DIRECTORY` (`.chroma/`) and
+    `manifest.DEFAULT_MANIFEST_PATH` (`ingestion_manifest.json`) are both relative
+    paths, resolved against the process's current working directory. A test that
+    calls `retriever.load_corpus()`/`GuitarAssistantModel.load_context` with no
+    explicit `persist_directory` override (most unit tests pass one explicitly, but
+    nothing enforces that) would otherwise silently read or write whatever a real
+    `guitar-assistant-ingest` run has left in this repo's actual `.chroma/` —
+    non-deterministic depending on local disk state, and not network-free. Every
+    unit test's fakes are network-free regardless, so this only guards the
+    filesystem side.
     """
-    monkeypatch.setenv(CORPUS_ENV_VAR, DEMO_CORPUS)
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _clear_chromadb_system_cache():
+    """Clear chromadb's cross-process `System` cache after every test.
+
+    `Chroma(persist_directory=...)` keyed by settings is cached process-wide by
+    `SharedSystemClient`. Many tests each open a persistent store in its own
+    throwaway `tmp_path` (seeding/reopening/ingestion tests, plus
+    `GuitarAssistantModel.load_context`'s own open) without ever clearing it, and
+    the resulting pile-up of cached `System` objects pointing at directories pytest
+    has since removed is what caused the intermittent
+    `chromadb.errors.InvalidArgumentError`/`InternalError` ("Failed to pull logs
+    from the log store") seen when running the full suite. Clearing the cache
+    after each test keeps every persistent-store test starting from a clean slate.
+    """
+    yield
+    SharedSystemClient.clear_system_cache()
 
 
 class FakeChatModel(BaseChatModel):

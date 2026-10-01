@@ -7,17 +7,30 @@ documents, still run by one person for personal use or a small audience. See
 goal, and [architecture.md](architecture.md) for what's implemented today: real
 Wikipedia ingestion into a persistent vector store (§1/§2/§4), section-aware
 chunking (§3), and two-stage fuzzy/LLM routing (§6) are all current behavior,
-not future work — the 3-document, hand-written corpus (`data.py`) is now only
-an explicit demo/test fixture (`GUITAR_ASSISTANT_CORPUS=demo`), not the default
-runtime path. The gaps below are what's left.
+not future work. The gaps below are what's left.
 
+- **No cross-manufacturer/multi-model comparison.** The router (`agent.route`)
+  only ever resolves a query to one guitar model or to "all" (unfiltered
+  search across every indexed chunk) — there's no multi-model fan-out. A query
+  like "compare the Telecaster and the SG" routes to "all" rather than
+  retrieving each named model and synthesizing a real comparison, which is a
+  much weaker fallback once the corpus holds a few hundred models instead of 3.
+  Variant-level granularity within one article (e.g. distinguishing a "Player
+  Stratocaster" from an "American Ultra Stratocaster" mentioned on the same
+  page) has the same gap: a whole article is tagged with one `guitar_model`
+  slug. Both are deliberately out of scope for now — see
+  [scaling_strategy.md](scaling_strategy.md#what-this-plan-deliberately-doesnt-solve).
 - **Evaluation uses one custom correctness scorer, not MLflow's prebuilt
   RAG judges.** `RetrievalGroundedness`/`RetrievalRelevance` were considered for
-  `evaluation.py`'s `mlflow.genai.evaluate()` run and skipped: with 3 documents
-  and near-zero retrieval ambiguity, they'd score something already trivially
-  true in this corpus. Worth revisiting once the corpus grows and retrieval
-  ambiguity becomes real (e.g. several similarly named signature models) —
-  still a reasonable thing to defer for now, not an urgent gap.
+  `evaluation.py`'s `mlflow.genai.evaluate()` run and skipped: retrieval is
+  always filtered to the router's resolved model before similarity search runs
+  (see [architecture.md](architecture.md#agent-graph-langgraph-per-query)), so
+  ambiguity stays near-zero regardless of total corpus size — they'd score
+  something already trivially true. Worth revisiting once within-model
+  ambiguity becomes real (e.g. several similarly named signature models sharing
+  one article, or variant-level granularity per scaling_strategy.md's "what
+  this plan doesn't solve") — still a reasonable thing to defer for now, not an
+  urgent gap.
 - **No re-ranking step.** With 3 candidate chunks, raw similarity search is
   sufficient. At a few thousand documents, each query is still filtered down
   to one (or a handful of) named model(s) before similarity search runs, so

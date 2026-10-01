@@ -1,7 +1,8 @@
 # Testing & Validation Strategy
 
-Four layers, each validating a different claim, at different cost/speed tiers.
-Only unit tests run by default.
+A layer of fast, network-free unit tests, plus a set of integration tests, each
+validating a different claim against real external APIs (OpenAI and/or
+Wikipedia) at its own cost/speed tier. Only unit tests run by default.
 
 ## Unit tests
 
@@ -15,18 +16,34 @@ would gate on.
 ## End-to-end test / MLflow evaluation
 
 Unit tests can't validate whether the compiled agent answers real questions
-correctly and quickly enough. `tests/test_end_to_end.py` runs the agent against
-`task/test-questions.csv` (a golden dataset of 10 questions with expected answers
-and evaluation criteria) through the real OpenAI-backed graph, using
-`mlflow.genai.evaluate()` rather than a manual loop, and asserts:
+correctly and quickly enough, or catch it getting worse as it's extended. That's
+what `tests/test_end_to_end.py` guards against: it runs the real, OpenAI-backed
+agent — built against a frozen snapshot of real Wikipedia article content
+(`tests/fixtures/wikipedia_eval_corpus.json`; see
+`scripts/build_wikipedia_eval_fixture.py` for how it was built and how to
+deliberately refresh it) — through `mlflow.genai.evaluate()` against
+`tests/fixtures/wikipedia_golden_questions.csv` (a golden dataset of 10
+single-model questions with expected answers and evaluation criteria, half
+routed by a direct fuzzy name match and half worded to miss that match and
+exercise the shortlist+LLM routing fallback instead), and asserts:
 
-- **Accuracy ≥ 8/10** — `Expected_Answer`/`Evaluation_Criteria` are free text, so
+- **Accuracy ≥ 9/10** — `Expected_Answer`/`Evaluation_Criteria` are free text, so
   grading uses `correctness` ([evaluation.py](../src/guitar_assistant/evaluation.py)),
   a custom `mlflow.genai` scorer wrapping an LLM-as-judge call (a second, cheap
-  OpenAI call scoring the agent's actual answer) rather than exact match.
+  OpenAI call scoring the agent's actual answer) rather than exact match. The bar
+  is calibrated from an actual observed run (10/10 passed), not picked in
+  advance, with one slot of slack for LLM-judge/model noise.
 - **Latency < 10s per query** — read from `execution_duration` on each row of
   `EvaluationResult.result_df`, i.e. the trace `mlflow.genai.evaluate()` captures
   automatically for every `predict_fn` call.
+
+The corpus is a committed fixture rather than live Wikipedia or whatever happens
+to be locally ingested, specifically so this test stays a reliable regression
+guard: a run that can fail because an article's real content drifted (not
+because the agent regressed) teaches you to ignore red runs. It's rebuilt into
+an ephemeral in-memory vector store (real OpenAI embeddings, no live Wikipedia
+fetch) on every run via `retriever.build_vector_store`, so there's no
+dependency on a previously-populated `.chroma/`.
 
 `correctness` is a custom scorer rather than MLflow's builtin `Correctness` or
 `Guidelines` judges: the golden dataset carries both a reference `expected_answer`
@@ -35,14 +52,15 @@ grade separately. Running both would cost two LLM calls per row for two disjoint
 scores; `correctness` (via `grade_answer`) weighs both signals in one call, one
 score. Prebuilt RAG-specific judges (`RetrievalGroundedness`, `RetrievalRelevance`)
 were considered and skipped for the same reason noted in
-[limitations.md](limitations.md): with 3 documents and near-zero retrieval
-ambiguity, they'd check something already trivially true in this corpus.
+[limitations.md](limitations.md): with a handful of documents and near-zero
+retrieval ambiguity, they'd check something already trivially true in this
+fixture.
 
 Because this runs through `mlflow.genai.evaluate()`, the same invocation that
-proves the Tier 1 accuracy/latency acceptance criteria also logs an MLflow
-evaluation run — metrics (`correctness/mean`), per-row traces, and assessments —
-fulfilling the Tier 3 "Comprehensive Evaluation Framework" bonus rather than being
-a separate mechanism. Inspect it the same way as other runs/traces (see
+checks the accuracy/latency bars also logs an MLflow evaluation run — metrics
+(`correctness/mean`), per-row traces, and assessments — that you can inspect over
+time to see whether the agent's measured performance is trending up or down as
+it's extended. Inspect it the same way as other runs/traces (see
 [architecture.md](architecture.md#inspecting-agent-execution-logs)), under the
 `guitar-assistant-evaluation` experiment.
 
@@ -57,7 +75,7 @@ uv run pytest -m integration tests/test_end_to_end.py
 ## Judge calibration test
 
 The end-to-end test's accuracy claim is only as good as the judge behind
-`correctness`. Passing 8/10 golden questions means nothing if the judge itself
+`correctness`. Passing 9/10 golden questions means nothing if the judge itself
 is miscalibrated — e.g. rubber-stamping wrong answers (false positives) or
 rejecting correct ones over minor wording differences (false negatives).
 `tests/test_evaluation_integration.py` checks the judge directly, independent

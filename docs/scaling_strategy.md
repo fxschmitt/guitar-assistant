@@ -1,19 +1,15 @@
 # Scaling Strategy
 
-This document describes the design that grows the original 3-document demo
-(one chunk per document, an in-memory Chroma store, a structured-output router
-over 3 known models — the right design for that demo corpus, but not further)
-into a **hobby chatbot covering every electric guitar model with a Wikipedia
-article** — on the order of a few hundred to a few thousand documents, still
-run by a single person on a single `OPENAI_API_KEY`.
+This document describes the design behind a **hobby chatbot covering every
+electric guitar model with a Wikipedia article** — on the order of a few
+hundred to a few thousand documents, still run by a single person on a single
+`OPENAI_API_KEY`.
 
 **Status:** §1-4 and §6 below are implemented and are current behavior — see
 [architecture.md](architecture.md), which describes each as it works today, not
-as a plan. Only §5 (cost containment) remains open; the demo corpus/in-memory
-store from the paragraph above still exist too, but only as an explicit
-test/quick-start fixture (`GUITAR_ASSISTANT_CORPUS=demo`), not the default
-runtime path. This document is kept as the design rationale for *why* each
-piece looks the way it does, not as a to-do list.
+as a plan. Only §5 (cost containment) remains open. This document is kept as
+the design rationale for *why* each piece looks the way it does, not as a
+to-do list.
 
 Every fix below stays proportionally light for that target: a single
 ingestion script and a local persistent store are enough — there's no need
@@ -23,8 +19,8 @@ for a distributed data platform to cover a few thousand documents.
 
 ### 1. Wikipedia ingestion: discovery, fetch, and infobox parsing
 
-Today's corpus is 3 hand-written files. Growing to "every model with a
-Wikipedia article" needs an ingestion script with three steps:
+Covering "every model with a Wikipedia article" needs an ingestion script
+with three steps:
 
 - **Discovery**: walk Wikipedia's `Category:Electric guitars` category tree
   (and its manufacturer subcategories) via the Wikipedia API to enumerate
@@ -38,8 +34,7 @@ Wikipedia article" needs an ingestion script with three steps:
   period, scale length, body/neck wood, pickups. A wikitext parser (e.g.
   `wikitextparser` or `mwparserfromhell`) extracts these fields directly and
   deterministically, and strips templates/references from the article body to
-  produce clean Markdown. This replaces the current hand-written spec table
-  with the same shape of data, sourced automatically.
+  produce a clean Markdown spec table, sourced automatically.
 
 An LLM call is only needed as a fallback for the rare page with no infobox,
 or one article covering several closely related variants (e.g. a "Fender
@@ -50,10 +45,10 @@ stretch goal, not a blocker (see §3 for how sub-sectioning would carry it).
 
 ### 2. Persistent vector store + deterministic metadata
 
-Re-embedding the whole corpus on every process start (today's in-memory
-Chroma behavior) is fine for 3 documents but wasteful at a few thousand —
-each restart re-spends embedding-API budget for content that hasn't changed.
-Swap in Chroma's **persistent client** (`chromadb.PersistentClient(path=...)`,
+Re-embedding the whole corpus on every process start is wasteful at a few
+thousand documents — each restart re-spends embedding-API budget for content
+that hasn't changed. Use Chroma's **persistent client**
+(`chromadb.PersistentClient(path=...)`,
 writing to a local `.chroma/` directory, gitignored like `mlflow.db`), so
 embeddings survive across runs.
 
@@ -68,11 +63,10 @@ over every document; this keeps the ingestion script cheap to run repeatedly.
 
 ### 3. Chunking: markdown-header-aware, not whole-document
 
-Whole-document chunking only works because today's sample corpus is 3 short,
-hand-written files. A real Wikipedia article runs several sections (history,
-design, notable players, variants, specifications) and can be several pages
-long — too much for one embedding/context window, and too easy to blur
-unrelated sections together in one chunk. Chunk by Markdown header using
+A real Wikipedia article runs several sections (history, design, notable
+players, variants, specifications) and can be several pages long — too much
+for one embedding/context window, and too easy to blur unrelated sections
+together in one chunk. Chunk by Markdown header using
 LangChain's `MarkdownHeaderTextSplitter`
 (`headers_to_split_on=[("##", "section"), ("###", "subsection")]`), which
 keeps each section — and any infobox-derived table inside it — as one atomic
